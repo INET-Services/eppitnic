@@ -90,6 +90,9 @@ schema upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   prompt; `--must-change-password`), `user activate` and `user deactivate`
   apply the API's password policy and its last-admin, last-manager and reach
   rules, shared in `UserRules`, and record history without the password.
+- `user mfa-reset` removes a user's MFA like `DELETE /v1/users/{id}/totp`
+  (same reach rules, shared in `UserRules`); `--must-enroll-mfa` also requires
+  enrolling again at the next login outside the safe networks.
 - `config epp-password` takes the password as `<new-password>`,
   `--password-stdin` or, at a terminal, a hidden prompt asked twice.
 - `contact cleanup` clears `admin` and `tech` on domains, then deletes the

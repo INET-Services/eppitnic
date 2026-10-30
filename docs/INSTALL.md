@@ -367,11 +367,18 @@ echo "$NEW" | bin/eppitnic user password jdoe --password-stdin --must-change-pas
 bin/eppitnic user password jdoe                          # asks twice, no echo
 bin/eppitnic user deactivate jdoe mroe                   # already inactive is a no-op
 bin/eppitnic user activate jdoe
+bin/eppitnic user mfa-reset jdoe --must-enroll-mfa       # no code at login, enrol again
 ```
 
 `user password` takes one of `--password=VALUE`, `--password-stdin` or
 `--generate`, or prompts at a terminal. It keeps existing sessions and API
 tokens valid; `--must-change-password` forces a change at next login.
+
+`user mfa-reset` removes the TOTP secret and any pending enrolment, as
+`DELETE /v1/users/{id}/totp` does, for yourself, your reseller's users (as a
+manager) or anyone (as an admin). `--must-enroll-mfa` also makes the user set
+MFA up again at the next login from outside the safe networks. A user without
+MFA is left as is.
 
 Issue a fixed API token for scripted access:
 

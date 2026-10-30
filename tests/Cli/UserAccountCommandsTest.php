@@ -4,6 +4,7 @@ namespace Eppitnic\Tests\Cli;
 
 use Eppitnic\Cli\Command\UserActivateCommand;
 use Eppitnic\Cli\Command\UserDeactivateCommand;
+use Eppitnic\Cli\Command\UserMfaResetCommand;
 use Eppitnic\Cli\Command\UserPasswordCommand;
 use Eppitnic\Cli\UsageError;
 use Eppitnic\Config;
@@ -13,7 +14,7 @@ use PHPUnit\Framework\TestCase;
 use RedBeanPHP\R;
 
 /**
- * `user password`, `user activate` and `user deactivate`: the CLI shell over
+ * `user password`, `user activate`, `user deactivate` and `user mfa-reset`: the CLI shell over
  * the rules in UserRules, which the API routes share.
  */
 final class UserAccountCommandsTest extends TestCase
@@ -313,5 +314,106 @@ final class UserAccountCommandsTest extends TestCase
     public function testActingAsAnUnknownUserIsAUsageError(): void {
         $this->expectException(UsageError::class);
         (new UserActivateCommand(['--user=99', 'alice']))->run();
+    }
+
+    // ---------------------------------------------------------------
+    // user mfa-reset
+    // ---------------------------------------------------------------
+
+    private function withMfa(int $id): void {
+        R::exec("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', totp_secret_pending = 'PENDINGSECRET234' WHERE id = ?", [$id]);
+    }
+
+    public function testMfaResetClearsBothSecretsLikeTheApi(): void {
+        $this->withMfa(3);
+
+        [$code, $output] = $this->exec(new UserMfaResetCommand(['--user=2', 'alice']));
+
+        $this->assertSame(0, $code);
+        $this->assertSame("MFA removed for 'alice'\n", $output);
+        $row = R::getRow('SELECT totp_secret, totp_secret_pending, must_enroll_mfa FROM users WHERE id = 3');
+        $this->assertNull($row['totp_secret']);
+        $this->assertNull($row['totp_secret_pending']);
+        $this->assertSame(0, (int) $row['must_enroll_mfa']);
+    }
+
+    public function testMfaResetHistoryNeverHoldsTheSecret(): void {
+        $this->withMfa(3);
+
+        $this->exec(new UserMfaResetCommand(['--user=2', 'alice']));
+
+        $rows = $this->history(3);
+        $this->assertCount(1, $rows);
+        $this->assertSame([2, 'update'], [(int) $rows[0]['user_id'], $rows[0]['action']]);
+        $this->assertSame('alice', json_decode($rows[0]['data'], true)['username']);
+        $this->assertStringNotContainsString('JBSWY3DPEHPK3PXP', $rows[0]['data']);
+        $this->assertStringNotContainsString('PENDINGSECRET234', $rows[0]['data']);
+    }
+
+    public function testMfaResetCanRequireEnrolmentAgain(): void {
+        $this->withMfa(3);
+
+        [, $output] = $this->exec(new UserMfaResetCommand(['--user=2', '--must-enroll-mfa', 'alice']));
+
+        $this->assertSame("MFA removed for 'alice', must set it up again at the next login\n", $output);
+        $this->assertSame(1, (int) R::getCell('SELECT must_enroll_mfa FROM users WHERE id = 3'));
+        $this->assertSame(1, json_decode($this->history(3)[0]['data'], true)['must_enroll_mfa']);
+    }
+
+    public function testMfaResetOfAUserWithoutMfaChangesNothing(): void {
+        [$code, $output] = $this->exec(new UserMfaResetCommand(['--user=2', '--must-enroll-mfa', 'alice']));
+
+        $this->assertSame(0, $code);
+        $this->assertSame("'alice' has no MFA\n", $output);
+        $this->assertSame([], $this->history(3));
+        $this->assertSame(0, (int) R::getCell('SELECT must_enroll_mfa FROM users WHERE id = 3'));
+    }
+
+    public function testMfaResetByAnAdminOnAnyUserAndOnSelf(): void {
+        $this->withMfa(4);
+        $this->withMfa(1);
+
+        [$code] = $this->exec(new UserMfaResetCommand(['other', 'root']));
+
+        $this->assertSame(0, $code);
+        $this->assertNull(R::getCell('SELECT totp_secret FROM users WHERE id = 4'));
+        $this->assertNull(R::getCell('SELECT totp_secret FROM users WHERE id = 1'));
+    }
+
+    public function testMfaResetByAPlainUserOnlyForThemselves(): void {
+        $this->withMfa(3);
+        $this->withMfa(2);
+
+        [$code] = $this->exec(new UserMfaResetCommand(['--user=3', 'alice', 'boss']));
+
+        $this->assertSame(INVALID_INPUT, $code);
+        $this->assertNull(R::getCell('SELECT totp_secret FROM users WHERE id = 3'));
+        $this->assertNotNull(R::getCell('SELECT totp_secret FROM users WHERE id = 2'));
+        $this->assertStringContainsString('You are not authorized to perform this operation', $this->errorText());
+    }
+
+    #[DataProvider('unreachableTargets')]
+    public function testMfaResetRefusesWhatTheActorCannotReach(string $target): void {
+        $this->withMfa((int) R::getCell('SELECT id FROM users WHERE username = ?', [$target]));
+
+        [$code] = $this->exec(new UserMfaResetCommand(['--user=2', $target]));
+
+        $this->assertSame(INVALID_INPUT, $code);
+        $this->assertNotNull(R::getCell('SELECT totp_secret FROM users WHERE username = ?', [$target]));
+        $this->assertStringContainsString('You are not authorized to perform this operation', $this->errorText());
+    }
+
+    public static function unreachableTargets(): array {
+        return ['another reseller\'s manager' => ['other'], 'an admin' => ['root']];
+    }
+
+    public function testMfaResetReportsAnUnknownUserAndContinues(): void {
+        $this->withMfa(3);
+
+        [$code] = $this->exec(new UserMfaResetCommand(['--user=2', 'nobody', 'alice']));
+
+        $this->assertSame(INVALID_INPUT, $code);
+        $this->assertNull(R::getCell('SELECT totp_secret FROM users WHERE id = 3'));
+        $this->assertStringContainsString('no such user', $this->errorText());
     }
 }

@@ -788,17 +788,7 @@ $app->delete('/v1/users/{id}/totp', function (Request $request, Response $respon
         return Json::response($response, ['error' => 'You are not authorized to perform this operation'], 403);
     }
 
-    R::exec("UPDATE users SET totp_secret = NULL, totp_secret_pending = NULL WHERE id = :id", [
-        ':id' => $args['id'],
-    ]);
-
-    $user_id = (int) $decoded->data->id;
-    $users  = R::getAll("SELECT
-        id, active, role, username, max_token_age, max_idle_time, debug
-    FROM users WHERE id = :id", [
-        ':id' => $args['id'],
-    ]);
-    History::record('users', (int) $args['id'], 'update', $users[0] ?? [], $user_id);
+    $users = UserRules::resetMfa((int) $args['id'], (int) $decoded->data->id);
     return Json::response($response, [
         'users' => $users,
     ]);

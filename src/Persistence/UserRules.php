@@ -31,6 +31,24 @@ final class UserRules
     }
 
     /**
+     * Remove a user's TOTP secret and any pending enrolment, and record it.
+     *
+     * @param bool $mustEnroll also require enrolment again at the next login
+     *        from outside the safe networks
+     * @return array the users rows (id, active, role, ...) the API returns
+     */
+    public static function resetMfa(int $userId, ?int $actorId, bool $mustEnroll = false): array {
+        R::exec('UPDATE users SET totp_secret = NULL, totp_secret_pending = NULL'
+            . ($mustEnroll ? ', must_enroll_mfa = 1' : '') . ' WHERE id = :id', [':id' => $userId]);
+
+        $users = R::getAll('SELECT id, active, role, username, max_token_age, max_idle_time, debug
+                            FROM users WHERE id = :id', [':id' => $userId]);
+        History::record('users', $userId, 'update',
+            ($users[0] ?? []) + ($mustEnroll ? ['must_enroll_mfa' => 1] : []), $actorId);
+        return $users;
+    }
+
+    /**
      * The last active admin, or the last active manager of an active reseller,
      * may not be demoted or deactivated -- someone has to be left who can fix
      * it; a promotion keeps them able to.

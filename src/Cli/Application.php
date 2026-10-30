@@ -67,6 +67,7 @@ use Eppitnic\Cli\Command\SetupCommand;
 use Eppitnic\Cli\Command\UserActivateCommand;
 use Eppitnic\Cli\Command\UserCreateCommand;
 use Eppitnic\Cli\Command\UserDeactivateCommand;
+use Eppitnic\Cli\Command\UserMfaResetCommand;
 use Eppitnic\Cli\Command\UserPasswordCommand;
 use Eppitnic\Cli\Command\UserTokenCommand;
 
@@ -131,6 +132,7 @@ final class Application
             'user password'             => UserPasswordCommand::class,
             'user activate'             => UserActivateCommand::class,
             'user deactivate'           => UserDeactivateCommand::class,
+            'user mfa-reset'            => UserMfaResetCommand::class,
             'config show'               => ConfigShowCommand::class,
             'config epp-server'         => ConfigEppServerCommand::class,
             'config epp-set'            => ConfigEppSetCommand::class,
