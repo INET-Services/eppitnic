@@ -69,6 +69,12 @@ class Contact extends AbstractObject
     'schoolcode',
   );
 
+  /** a domain or pending transfer names the contacts row as registrant */
+  private const REFERENCED_SQL = "EXISTS (SELECT 1 FROM domains d
+      WHERE d.registrant = contacts.handle AND d.active = 1)
+    OR EXISTS (SELECT 1 FROM transfers t
+      WHERE t.registrant = contacts.handle AND t.status = 'pending')";
+
   /** the client-side states a contact accepts, for updateStatus() */
   private const CLIENT_STATES = array('clientDeleteProhibited', 'clientUpdateProhibited');
 
@@ -687,6 +693,38 @@ class Contact extends AbstractObject
   }
 
   /**
+   * Whether the registry holds the contact as linked: its status says so, or
+   * a locally known domain or pending transfer names it as registrant.
+   */
+  public function isLinked(): bool {
+    return in_array('linked', (array) $this->status, TRUE)
+      || self::referencedBy((string) $this->handle) !== [];
+  }
+
+  /**
+   * Domains still held at the registry (active) and pending transfer-ins
+   * naming the contact as registrant.
+   *
+   * @return string[] domain names
+   */
+  public static function referencedBy(string $handle): array {
+    return R::getCol("
+      SELECT domain FROM domains WHERE registrant = :handle AND active = 1
+      UNION
+      SELECT domain FROM transfers WHERE registrant = :handle2 AND status = 'pending'
+      ORDER BY domain
+    ", [':handle' => $handle, ':handle2' => $handle]);
+  }
+
+  /**
+   * @param string[] $domains what referencedBy() returned
+   */
+  public static function stillRegistrantMessage(string $handle, array $domains): string {
+    return "contact {$handle} is still the registrant of " . count($domains)
+      . ' domain(s): ' . implode(', ', $domains);
+  }
+
+  /**
    * list contacts stored in DB
    *
    * @param bool $activeOnly list only active contacts (TRUE = yes / FALSE = no)
@@ -703,12 +741,16 @@ class Contact extends AbstractObject
       $where[] = 'active = 1';
     }
     $rows = R::getAll("SELECT handle, org, name, entitytype, status, reseller_id,
-      (SELECT r.name FROM resellers r WHERE r.id = contacts.reseller_id) AS reseller_name
+      (SELECT r.name FROM resellers r WHERE r.id = contacts.reseller_id) AS reseller_name,
+      (" . self::REFERENCED_SQL . ") AS referenced
       FROM contacts WHERE " . implode(' AND ', $where) . " ORDER BY org, name ASC", $params);
 
-    // status is a serialized column, in either of the two shapes the table holds
+    // status is a serialized column, in either of the two shapes the table holds;
+    // the stored snapshot lags the registry, so local references count too
     return array_map(static function (array $row): array {
       $row['status'] = SerializedColumn::toArray($row['status'] ?? null);
+      $row['linked'] = in_array('linked', $row['status'], TRUE) || (int) $row['referenced'] === 1;
+      unset($row['referenced']);
       return $row;
     }, $rows);
   }

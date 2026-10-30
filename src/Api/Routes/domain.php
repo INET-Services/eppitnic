@@ -9,6 +9,7 @@ use Eppitnic\Epp\Domain;
 use Eppitnic\Persistence\History;
 use Eppitnic\Persistence\Scope;
 use Eppitnic\Persistence\SerializedColumn;
+use Eppitnic\Service\ContactRefresh;
 use Eppitnic\Service\DomainService;
 use Eppitnic\Service\EppSession;
 use Eppitnic\Service\PowerDnsZones;
@@ -419,6 +420,7 @@ $app->post('/v1/domains/{name}/registrant', function (Request $request, Response
                 return ['ok' => false, 'status' => 404, 'error' => "Domain '{$name}' not found"];
             }
 
+            $previous = $domain->get('registrant');
             $domain->set('registrant', $params['registrant']);
             // updateRegistrant() requires authinfo to change alongside
             // registrant -- rotate it (caller-supplied, or freshly generated)
@@ -433,6 +435,7 @@ $app->post('/v1/domains/{name}/registrant', function (Request $request, Response
             $warnings = $domain->updateDB($name, $scope, $changes)
                 ? []
                 : [Warnings::localWrite("domain '{$name}'", $domain->getError())];
+            ContactRefresh::run($nic, [$previous, $params['registrant']], $scope->userId);
             return ['ok' => true, 'domain' => $domain, 'warnings' => $warnings];
         }, $debug);
     } catch (\RuntimeException $e) {
@@ -557,12 +560,14 @@ $app->delete('/v1/domains/{name}', function (Request $request, Response $respons
     try {
         $result = EppSession::run(function ($nic) use ($name, $scope) {
             $domain = new Domain($nic);
+            $registrant = R::getCell('SELECT registrant FROM domains WHERE domain = ?', [$name]);
             if ( ! $domain->delete($name)) {
                 return ['ok' => false, 'error' => $domain->getError()];
             }
             $warnings = $domain->deleteDomainDB($name, $scope)
                 ? []
                 : [Warnings::localWrite("domain '{$name}'", $domain->getError())];
+            ContactRefresh::run($nic, [$registrant ?: null], $scope->userId);
             return ['ok' => true, 'warnings' => $warnings];
         }, $debug);
     } catch (\RuntimeException $e) {

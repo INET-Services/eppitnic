@@ -294,6 +294,7 @@ class PollProcessor
             R::exec("UPDATE messages SET archived_time = NOW() WHERE id = ?", [$archiveMsg]);
           }
           R::exec("DELETE FROM transfers WHERE domain = ?", [$transfer['domain']]);
+          ContactRefresh::run($this->client, [$this->domain->get('registrant')], 1);
           break;
 
         case "clientRejected":

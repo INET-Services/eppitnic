@@ -5,6 +5,8 @@ namespace Eppitnic\Cli\Command;
 use Eppitnic\Cli\Command;
 use Eppitnic\Cli\UsageError;
 use Eppitnic\Epp\Domain;
+use Eppitnic\Service\ContactRefresh;
+use RedBeanPHP\R;
 
 /**
  * Delete domains at the registry, and deactivate them locally.
@@ -41,6 +43,7 @@ final class DomainDeleteCommand extends Command
         $this->withSession(function ($nic) use ($names, $scope) {
             foreach ($names as $name) {
                 $domain = new Domain($nic);
+                $registrant = R::getCell('SELECT registrant FROM domains WHERE domain = ?', [$name]);
 
                 if ( ! $domain->delete($name)) {
                     $this->itemFailed($name, $domain->getError());
@@ -51,6 +54,7 @@ final class DomainDeleteCommand extends Command
                 // local row must not be touched
                 if ( ! $this->isDryRun()) {
                     $domain->deleteDomainDB($name, $scope);
+                    ContactRefresh::run($nic, [$registrant ?: null], $this->userId());
                 }
 
                 $this->record("{$name} deleted", ['domain' => $name, 'deleted' => true]);

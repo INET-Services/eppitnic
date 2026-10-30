@@ -89,6 +89,8 @@ final class DomainService
             if ( ! $domain->storeDB($actorId)) {
                 $warnings[] = Warnings::localWrite("domain '{$params['domain']}'", $domain->getError());
             }
+            // the registrant is linked now
+            ContactRefresh::run($nic, [$params['registrant']], $actorId);
         } elseif ($persist) {
             // not ours until PollProcessor sees the transfer complete
             try {
@@ -271,6 +273,7 @@ final class DomainService
             R::exec("UPDATE domains SET reseller_id = ?, registrant = ? WHERE domain = ?", [$resellerId, $newRegistrantHandle, $name]);
             $id = (int) R::getCell("SELECT id FROM domains WHERE domain = ?", [$name]);
             History::record('domains', $id, 'update', ['reseller_id' => $resellerId, 'registrant' => $newRegistrantHandle], $actorId);
+            ContactRefresh::run($nic, [$oldRegistrant->get('handle'), $newRegistrantHandle], $actorId);
         }
 
         return ['ok' => true, 'domain' => $domain];

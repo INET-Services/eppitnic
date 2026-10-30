@@ -5,6 +5,7 @@ namespace Eppitnic\Tests\Unit;
 use Eppitnic\Epp\Contact;
 use Eppitnic\Persistence\Scope;
 use Eppitnic\Tests\Support\EppTestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RedBeanPHP\R;
 
 /**
@@ -23,6 +24,11 @@ final class ContactListTest extends EppTestCase
         R::exec('DROP TABLE IF EXISTS resellers');
         R::exec('CREATE TABLE resellers (id INTEGER PRIMARY KEY, name TEXT)');
         R::exec("INSERT INTO resellers (id, name) VALUES (1, 'Registrar (self)')");
+        foreach (['domains', 'transfers'] as $table) {
+            R::exec("DROP TABLE IF EXISTS {$table}");
+        }
+        R::exec('CREATE TABLE domains (id INTEGER PRIMARY KEY, domain TEXT, registrant TEXT, status TEXT, active INTEGER DEFAULT 1)');
+        R::exec("CREATE TABLE transfers (id INTEGER PRIMARY KEY, domain TEXT, registrant TEXT, status TEXT DEFAULT 'pending')");
         R::exec('DROP TABLE IF EXISTS contacts');
         R::exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, handle TEXT, org TEXT, name TEXT,
                  entitytype INTEGER, status TEXT, reseller_id INTEGER, active INTEGER DEFAULT 1)');
@@ -77,5 +83,67 @@ final class ContactListTest extends EppTestCase
         $rows = (new Contact($this->nic))->listContacts(Scope::operator(1));
 
         $this->assertSame('Registrar (self)', $rows[0]['reseller_name']);
+    }
+
+    private function linkedOf(string $handle): bool {
+        $rows = (new Contact($this->nic))->listContacts(Scope::operator(1));
+        return array_column($rows, 'linked', 'handle')[$handle];
+    }
+
+    public function testTheStoredStatusAloneMakesItLinked(): void {
+        $this->insert('A', serialize(['ok', 'linked']));
+        $this->insert('B', serialize(['ok']));
+
+        $this->assertTrue($this->linkedOf('A'));
+        $this->assertFalse($this->linkedOf('B'));
+    }
+
+    /**
+     * @return array<string, array{0: string}> the domain's serialized status
+     */
+    public static function heldDomains(): array {
+        return [
+            'registered'    => [serialize(['ok'])],
+            'inactive'      => [serialize(['inactive', 'dnsHold'])],
+            'pendingDelete' => [serialize(['pendingDelete'])],
+        ];
+    }
+
+    #[DataProvider('heldDomains')]
+    public function testAHeldDomainLinksItWhateverTheStoredStatusSays(string $domainStatus): void {
+        $this->insert('A', serialize(['ok']));
+        R::exec('INSERT INTO domains (domain, registrant, active) VALUES (?, ?, 1)', ['a.it', 'A']);
+        R::exec('UPDATE domains SET status = ?', [$domainStatus]);
+
+        $this->assertTrue($this->linkedOf('A'));
+    }
+
+    public function testAPendingTransferLinksIt(): void {
+        $this->insert('A', serialize(['ok']));
+        R::exec("INSERT INTO transfers (domain, registrant, status) VALUES ('a.it', 'A', 'pending')");
+
+        $this->assertTrue($this->linkedOf('A'));
+    }
+
+    public function testADeletedDomainOrACancelledTransferDoesNot(): void {
+        $this->insert('A', serialize(['ok']));
+        $this->insert('B', serialize(['ok']));
+        R::exec('INSERT INTO domains (domain, registrant, active) VALUES (?, ?, 0)', ['a.it', 'A']);
+        R::exec("INSERT INTO transfers (domain, registrant, status) VALUES ('b.it', 'B', 'cancelled')");
+
+        $this->assertFalse($this->linkedOf('A'));
+        $this->assertFalse($this->linkedOf('B'));
+    }
+
+    public function testASingleContactReportsTheSameBooleanFromTheStoredRow(): void {
+        $this->insert('A', serialize(['ok']));
+        R::exec('INSERT INTO domains (domain, registrant, active) VALUES (?, ?, 1)', ['a.it', 'A']);
+
+        $contact = new Contact($this->nic);
+        $contact->set('handle', 'A');
+
+        $this->assertTrue($contact->isLinked());
+        $this->assertSame(['a.it'], Contact::referencedBy('A'));
+        $this->assertSame([], Contact::referencedBy('NOBODY'));
     }
 }

@@ -20,6 +20,7 @@ function contactToArray(Contact $contact): array {
     return [
         'handle'                => $contact->get('handle'),
         'status'                => $contact->get('status'),
+        'linked'                => $contact->isLinked(),
         'name'                  => $contact->get('name'),
         'org'                   => $contact->get('org'),
         'street'                => $contact->get('street'),
@@ -205,6 +206,9 @@ $app->delete('/v1/contacts/{handle}', function (Request $request, Response $resp
     // local scoping that follows
     if ( ! Access::ownsContact($handle, $scope)) {
         return Json::response($response, ['error' => 'You are not authorized to delete this contact'], 403);
+    }
+    if (($held = Contact::referencedBy($handle)) !== []) {
+        return Json::response($response, ['error' => Contact::stillRegistrantMessage($handle, $held)], 409);
     }
 
     try {

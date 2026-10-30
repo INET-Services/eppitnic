@@ -6,6 +6,7 @@ use Eppitnic\Cli\Command;
 use Eppitnic\Cli\UsageError;
 use Eppitnic\Epp\Domain;
 use Eppitnic\Persistence\Scope;
+use Eppitnic\Service\ContactRefresh;
 
 /**
  * Change a domain's registrant. Its own verb because it is its own EPP command:
@@ -56,6 +57,7 @@ final class DomainSetRegistrantCommand extends Command
                     continue;
                 }
 
+                $previous = $domain->get('registrant');
                 $domain->set('registrant', $registrant);
                 // the registry rejects a registrant change that does not also
                 // change the authinfo, so one is always set
@@ -73,6 +75,7 @@ final class DomainSetRegistrantCommand extends Command
                         $this->failures++;
                         $this->warn("{$name}: updated at the registry, not stored (" . $domain->getError() . ')');
                     }
+                    ContactRefresh::run($nic, [$previous, $registrant], $this->userId());
                 }
 
                 $this->record(

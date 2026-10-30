@@ -41,6 +41,19 @@ schema upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   `Validate::maxLength` counts characters, not bytes.
 - `contact create --store`, `contact update --store`, `domain set-registrant`
   and `domain import` report a failed local write.
+- Contacts carry a boolean `linked` (`GET /v1/contacts`, `GET
+  /v1/contacts/{handle}`): true when the stored status says so, or when an
+  active local domain (inactive and `dnsHold` included) or a pending
+  transfer-in names the contact as registrant. A registrant used by a new
+  domain no longer shows as unlinked until the next sync.
+- Creating a domain, changing a registrant (API, `domain set-registrant`,
+  moving to another reseller), deleting a domain and completing a transfer-in
+  re-read the registrants involved (old and new) from the registry and store
+  their status. Best effort: a failure is logged and never fails the
+  operation. `domain reap-deletions` does not refresh.
+- `DELETE /v1/contacts/{handle}` (`409`) and `contact delete` refuse a
+  registrant of an active local domain or pending transfer-in before asking
+  the registry, naming the domains.
 
 ### Users and sessions
 

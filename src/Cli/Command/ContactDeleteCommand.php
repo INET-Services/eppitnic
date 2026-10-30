@@ -33,9 +33,9 @@ final class ContactDeleteCommand extends Command
 
     public function run(): int {
         $handles = $this->names();
+        $this->database();
 
         if ($prefix = $this->option('prefix')) {
-            $this->database();
             $handles = array_merge($handles, R::getCol(
                 "SELECT handle FROM contacts WHERE active = 1 AND handle LIKE :prefix ORDER BY handle",
                 [':prefix' => $prefix . '%']
@@ -50,6 +50,20 @@ final class ContactDeleteCommand extends Command
 
         if ($handles === []) {
             throw new UsageError('give at least one handle, --file=PATH or --prefix=PREFIX');
+        }
+
+        // refused here, before the registry answers 2305
+        $handles = array_values(array_filter($handles, function (string $handle): bool {
+            $held = Contact::referencedBy($handle);
+            if ($held === []) {
+                return true;
+            }
+            $this->failures++;
+            $this->warn(Contact::stillRegistrantMessage($handle, $held));
+            return false;
+        }));
+        if ($handles === []) {
+            return $this->outcome(CONTACT_DELETE_FAILED);
         }
 
         if ( ! $this->confirm('Delete ' . count($handles) . ' contact(s) at the registry?')) {
