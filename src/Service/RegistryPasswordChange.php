@@ -170,11 +170,20 @@ final class RegistryPasswordChange
      * epp-password --force`. Verified by a real login first: a setting the
      * registry disagrees with breaks every call until someone notices.
      *
-     * @return array{ok: bool, error: string}
+     * A successful adopt also drops the shared session, which may still be
+     * logged in under the old credential; failing to is reported in
+     * 'warning', not as an error.
+     *
+     * @return array{ok: bool, error: string, stage: string, warning?: string}
+     *         stage is 'connect' (registry unreachable), 'credentials' (the
+     *         registry rejected the password), 'refused' (login refused for
+     *         another reason) or '' on success
      */
     public static function adopt(string $password, ?int $userId = null): array {
-        if ( ! self::passwordWorks($password)) {
-            return ['ok' => false, 'error' => 'the registry did not accept this password -- nothing was changed locally'];
+        $failure = self::loginFailure($password);
+        if ($failure !== null) {
+            return ['ok' => false, 'stage' => $failure['stage'],
+                    'error' => $failure['error'] . ' -- nothing was changed locally'];
         }
 
         $epp = Config::get('epp');
@@ -184,7 +193,38 @@ final class RegistryPasswordChange
         Config::set('epp', $epp);
         self::rotated('adopted', $userId);
 
-        return ['ok' => true, 'error' => ''];
+        $outcome = ['ok' => true, 'stage' => '', 'error' => ''];
+        if (($warning = self::resetSharedSession()) !== null) {
+            error_log('RegistryPasswordChange: ' . $warning);
+            $outcome['warning'] = $warning;
+        }
+        return $outcome;
+    }
+
+    /**
+     * Log the stored shared session out (best effort) and forget it, so the
+     * next operation logs in with the password now stored.
+     *
+     * @return string|null a warning, or null when nothing went wrong
+     */
+    private static function resetSharedSession(): ?string {
+        try {
+            if (SessionState::timestamp() > 0) {
+                $nic = self::newClient();
+                $nic->keepalive = true;
+                $nic->seedCookies(SessionState::cookies());
+                (new Session($nic))->logout();
+            }
+            SessionState::forget();
+            return null;
+        } catch (\Throwable $e) {
+            try {
+                SessionState::forget();
+            } catch (\Throwable) {
+            }
+            return 'the shared registry session could not be reset cleanly ('
+                . $e->getMessage() . '); it will idle out on its own';
+        }
     }
 
     /**
@@ -270,19 +310,55 @@ final class RegistryPasswordChange
      * A plain login and logout -- the credential is being tested, not changed.
      */
     private static function passwordWorks(string $password): bool {
+        return $password !== '' && self::loginFailure($password) === null;
+    }
+
+    /**
+     * @return array{stage: string, error: string}|null why the login with
+     *         $password failed; null when it worked. stage is 'connect',
+     *         'credentials' or 'refused' -- see classifyLoginRefusal()
+     */
+    private static function loginFailure(string $password): ?array {
         if ($password === '') {
-            return false;
+            return ['stage' => 'credentials', 'error' => 'the password is empty'];
         }
 
         $nic = self::newClient();
         $nic->EPPCfg->password = $password;
         $session = new Session($nic);
 
-        if ( ! $session->hello() || $session->login() === FALSE) {
-            return false;
+        if ( ! $session->hello()) {
+            return ['stage' => 'connect', 'error' => 'registry connection unavailable'];
+        }
+        if ($session->login() === FALSE) {
+            $code = (string) $session->svCode;
+            $reasonCode = (string) $session->extValueReasonCode;
+            $kind = self::classifyLoginRefusal($code, $reasonCode);
+            $detail = $code . ($reasonCode !== '' ? " / {$reasonCode}" : '')
+                . ': ' . ($session->extValueReason ?: $session->svMsg);
+            return match ($kind) {
+                'credentials' => ['stage' => 'credentials',
+                    'error' => "the registry rejected this password ({$detail})"],
+                'refused' => ['stage' => 'refused',
+                    'error' => "the registry refused the login for a reason other than the password, "
+                        . "so the password could not be checked ({$detail})"],
+                default => ['stage' => 'connect',
+                    'error' => 'registry connection unavailable (' . trim($session->getError()) . ')'],
+            };
         }
         $session->logout();
-        return true;
+        return null;
+    }
+
+    /**
+     * What a failed login means: 'credentials' (EPP 2200 or reason 6005),
+     * 'refused' (any other parsed EPP error), 'unreachable' (no parsed answer).
+     */
+    public static function classifyLoginRefusal(string $svCode, string $reasonCode): string {
+        if ($svCode === '2200' || $reasonCode === '6005') {
+            return 'credentials';
+        }
+        return preg_match('/^[2]\d{3}$/', $svCode) ? 'refused' : 'unreachable';
     }
 
     /**

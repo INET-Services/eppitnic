@@ -57,7 +57,7 @@ final class DomainServiceTransferTest extends EppTestCase
         $this->assertSame('REGI1234REGI5678', $row['registrant']);
         $this->assertSame(2, (int) $row['reseller_id']);
         $this->assertSame('pending', $row['status']);
-        $this->assertSame(['TECH1234TECH5678'], unserialize($row['techc']));
+        $this->assertSame([], unserialize($row['techc']), 'tech contacts are ignored');
         $this->assertSame($this->params()['ns'], unserialize($row['dns']));
     }
 
@@ -84,12 +84,12 @@ final class DomainServiceTransferTest extends EppTestCase
     public function testARequestReplacesACancelledRowOfTheSameName(): void {
         R::exec("INSERT INTO transfers (reseller_id, domain, registrant, status) VALUES (9, 'example-two.it', 'OLD', 'cancelled')");
 
-        DomainService::recordTransferRequest('example-two.it', 'REGI1234REGI5678', ['T1'], ['ns1.example.it']);
+        DomainService::recordTransferRequest('example-two.it', 'REGI1234REGI5678', ['ns1.example.it']);
 
         $row = R::getRow('SELECT * FROM transfers');
         $this->assertSame(1, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
         $this->assertSame(['pending', 'REGI1234REGI5678', 2], [$row['status'], $row['registrant'], (int) $row['reseller_id']]);
-        $this->assertSame(['T1'], unserialize($row['techc']));
+        $this->assertSame([], unserialize($row['techc']));
         $this->assertSame(['ns1.example.it'], unserialize($row['dns']));
     }
 }

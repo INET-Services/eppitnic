@@ -25,6 +25,7 @@ use Eppitnic\Cli\Command\ConfigShowCommand;
 use Eppitnic\Cli\Command\ConfigSmtpSetCommand;
 use Eppitnic\Cli\Command\ConfigTrustedProxiesCommand;
 use Eppitnic\Cli\Command\ContactCheckCommand;
+use Eppitnic\Cli\Command\ContactCleanupCommand;
 use Eppitnic\Cli\Command\ContactCreateCommand;
 use Eppitnic\Cli\Command\ContactDeleteCommand;
 use Eppitnic\Cli\Command\ContactFixEmailPrivacyCommand;
@@ -63,7 +64,10 @@ use Eppitnic\Cli\Command\SessionCreditCommand;
 use Eppitnic\Cli\Command\SessionHelloCommand;
 use Eppitnic\Cli\Command\SessionKeepaliveCommand;
 use Eppitnic\Cli\Command\SetupCommand;
+use Eppitnic\Cli\Command\UserActivateCommand;
 use Eppitnic\Cli\Command\UserCreateCommand;
+use Eppitnic\Cli\Command\UserDeactivateCommand;
+use Eppitnic\Cli\Command\UserPasswordCommand;
 use Eppitnic\Cli\Command\UserTokenCommand;
 
 /**
@@ -101,6 +105,7 @@ final class Application
             'contact create'            => ContactCreateCommand::class,
             'contact update'            => ContactUpdateCommand::class,
             'contact delete'            => ContactDeleteCommand::class,
+            'contact cleanup'           => ContactCleanupCommand::class,
             'contact fix-email-privacy' => ContactFixEmailPrivacyCommand::class,
             'session hello'             => SessionHelloCommand::class,
             'session credit'            => SessionCreditCommand::class,
@@ -123,6 +128,9 @@ final class Application
             'setup'                     => SetupCommand::class,
             'user create'               => UserCreateCommand::class,
             'user token'                => UserTokenCommand::class,
+            'user password'             => UserPasswordCommand::class,
+            'user activate'             => UserActivateCommand::class,
+            'user deactivate'           => UserDeactivateCommand::class,
             'config show'               => ConfigShowCommand::class,
             'config epp-server'         => ConfigEppServerCommand::class,
             'config epp-set'            => ConfigEppSetCommand::class,

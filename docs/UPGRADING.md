@@ -1,4 +1,39 @@
-# Upgrading from 6.x
+# Upgrading
+
+## From 7.0 to 7.1
+
+Back up the database, pull the new code or image and start it. The schema
+upgrades itself (`070000` to `070100`) on the first connection. Then:
+
+1. **Check `history` for removed e-mail addresses.** `users.email` is now
+   unique and 256 characters wide. Where several users shared an address, the
+   oldest account keeps it and the others lose it, each recorded as
+   "duplicate address removed by the 7.1 upgrade". Empty addresses become
+   NULL. Every user needs an address before they can be saved again, and
+   `user create` requires `--email`.
+2. **Sessions last 15 minutes by default.** Users pick their own duration in
+   their profile; admins and managers cap it with the maximum session
+   duration (`max_token_age`, default 240 minutes).
+3. **Password reset by e-mail** needs SMTP configured and the frontend's
+   public origin in `allowed_origins`, because the link points there:
+
+   ```bash
+   bin/eppitnic config allowed-origins add https://<public name>
+   ```
+
+4. **Remove admin/tech remnants** (Technical Guidelines v4.0). List first,
+   then run:
+
+   ```bash
+   bin/eppitnic contact cleanup --dry-run
+   bin/eppitnic contact cleanup
+   ```
+
+5. **Registry password:** `config epp-password` rotates it; if the registry
+   already holds a new one, store it with Settings, "use an existing
+   password", or `config epp-password --force`.
+
+## From 6.x to 7.0
 
 Upgrading a 6.x installation to 7.0 converts `config.xml`, migrates the
 database in place and replaces the web interface and CLI scripts with a REST
@@ -48,7 +83,7 @@ The migration also drops `users.dns`, which nothing reads.
 3. Create an admin. 6.x had no admin role, so the migration leaves none:
 
    ```bash
-   bin/eppitnic user create <ADMIN_USERNAME> --password='<ADMIN_PASSWORD>' --role=admin
+   bin/eppitnic user create <ADMIN_USERNAME> --password='<ADMIN_PASSWORD>' --email=<ADMIN_EMAIL> --role=admin
    ```
 
 4. Reset every other user's password as that admin, through
@@ -133,6 +168,14 @@ bin/eppitnic doctor ownership
 
 See "Check that domains and registrants agree" in [INSTALL.md](INSTALL.md)
 for fixing a mismatch.
+
+After upgrading to the v4.0-compatible release, `contact cleanup --dry-run`
+shows the admin/tech references and unused contacts that can be removed; see
+"Remove unused contacts" in [INSTALL.md](INSTALL.md):
+
+```bash
+bin/eppitnic contact cleanup --dry-run
+```
 
 Messages stored before this release may carry `type = 'unknown'` and an empty
 `domain` (mostly DNS validation failures). New messages parse correctly; to

@@ -125,7 +125,7 @@ $app->put('/v1/resellers/{id}/settings', function (Request $request, Response $r
 
     return $resellerSettingsReply(
         $response, $result, $resellerId, $actor['id'],
-        array_intersect_key($params, array_flip(['countrycode', 'techc', 'dnsset'])),
+        array_intersect_key($params, array_flip(['countrycode', 'entitytype', 'techc', 'dnsset', 'dnssec_algorithm', 'dnssec_digesttype'])),
     );
 });
 

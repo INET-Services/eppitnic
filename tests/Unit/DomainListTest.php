@@ -25,7 +25,7 @@ final class DomainListTest extends EppTestCase
         R::exec('DROP TABLE IF EXISTS domains');
         R::exec('DROP TABLE IF EXISTS transfers');
         R::exec('CREATE TABLE domains (id INTEGER PRIMARY KEY, domain TEXT, registrant TEXT,
-                 status TEXT, reseller_id INTEGER, active INTEGER DEFAULT 1)');
+                 status TEXT, reseller_id INTEGER, ex_date TEXT, active INTEGER DEFAULT 1)');
         R::exec('CREATE TABLE transfers (id INTEGER PRIMARY KEY, domain TEXT, registrant TEXT, reseller_id INTEGER, status TEXT NOT NULL DEFAULT \'pending\')');
     }
 
@@ -92,6 +92,16 @@ final class DomainListTest extends EppTestCase
         $rows = (new Domain($this->nic))->listDomains(Scope::operator(1), null, true);
 
         $this->assertSame(['h.it (transfer-in cancelled)'], array_column($rows, 'domain'));
+    }
+
+    public function testEachRowCarriesTheExpiryDate(): void {
+        $this->insert('a.it', serialize([]));
+        R::exec("UPDATE domains SET ex_date = '2027-03-01' WHERE domain = 'a.it'");
+        R::exec("INSERT INTO transfers (domain, registrant, reseller_id) VALUES ('b.it', 'REG1', 1)");
+
+        $rows = (new Domain($this->nic))->listDomains(Scope::operator(1));
+
+        $this->assertSame([null, '2027-03-01'], array_column($rows, 'ex_date'));
     }
 
     public function testEachRowNamesItsReseller(): void {

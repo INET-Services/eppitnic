@@ -69,7 +69,10 @@ final class DomainSetRegistrantCommand extends Command
 
                 if ( ! $this->isDryRun()) {
                     // updateDB() moves the domain to the new registrant's reseller
-                    $domain->updateDB($name, Scope::operator($this->userId()), $changes);
+                    if ( ! $domain->updateDB($name, Scope::operator($this->userId()), $changes)) {
+                        $this->failures++;
+                        $this->warn("{$name}: updated at the registry, not stored (" . $domain->getError() . ')');
+                    }
                 }
 
                 $this->record(

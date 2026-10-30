@@ -26,7 +26,7 @@ final class CreateTransferCommandTest extends EppTestCase
 
     /**
      * An available name takes the create branch, carrying every field the
-     * options supplied.
+     * options supplied except the admin and tech contacts, which are ignored.
      */
     public function testCreateBuildsADomainCreate(): void {
         $output = $this->preview(new DomainCreateCommand([
@@ -38,16 +38,17 @@ final class CreateTransferCommandTest extends EppTestCase
 
         $this->assertStringContainsString('<domain:create', $output);
         $this->assertStringContainsString('<domain:registrant>REGI1234REGI5678</domain:registrant>', $output);
-        $this->assertStringContainsString('<domain:contact type="admin">ADMIN123ADMIN456</domain:contact>', $output);
-        $this->assertStringContainsString('<domain:contact type="tech">TECH1234TECH5678</domain:contact>', $output);
+        $this->assertStringNotContainsString('<domain:contact', $output);
+        $this->assertStringNotContainsString('ADMIN123ADMIN456', $output);
+        $this->assertStringNotContainsString('TECH1234TECH5678', $output);
         $this->assertStringContainsString('<domain:hostName>ns2.example.it</domain:hostName>', $output);
     }
 
     /**
-     * The registry caps both lists at six; anything beyond is dropped rather
-     * than sent and refused.
+     * The registry caps the nameservers at six; anything beyond is dropped
+     * rather than sent and refused. --tech is accepted and sends nothing.
      */
-    public function testCreateCapsContactsAndNameserversAtSix(): void {
+    public function testCreateCapsNameserversAtSixAndIgnoresTech(): void {
         $tech = implode(':', array_map(fn($i) => "TECH{$i}", range(1, 8)));
         $ns = implode(':', array_map(fn($i) => "ns{$i}.example.it", range(1, 8)));
 
@@ -55,7 +56,8 @@ final class CreateTransferCommandTest extends EppTestCase
             '--dry-run', '--registrant=REGI1234REGI5678', "--tech={$tech}", "--ns={$ns}", 'example-one.it',
         ]));
 
-        $this->assertSame(6, substr_count($output, '<domain:contact type="tech">'));
+        $this->assertSame(0, substr_count($output, '<domain:contact'));
+        $this->assertSame(6, substr_count($output, '<domain:hostName>'));
         $this->assertStringNotContainsString('ns7.example.it', $output);
     }
 

@@ -325,12 +325,12 @@ $app->patch('/v1/domains/{name}', function (Request $request, Response $response
 
             // registrant changes are a distinct EPP operation
             // (Domain::updateRegistrant(), which requires authinfo to change
-            // alongside it and ignores ns/tech) -- handled by the dedicated
-            // POST /domains/{name}/registrant endpoint instead
-            if (array_key_exists('admin', $params)) $domain->set('admin', $params['admin']);
+            // alongside it) -- handled by the dedicated
+            // POST /domains/{name}/registrant endpoint instead.
+            // admin and tech are accepted and ignored.
             if (array_key_exists('authinfo', $params)) $domain->set('authinfo', $params['authinfo']);
 
-            // diffed add/remove: caller sends the full target NS/tech/DNSSEC
+            // diffed add/remove: caller sends the full target NS/DNSSEC
             // list, we add what's missing and remove what's no longer present
             if (array_key_exists('ns', $params)) {
                 $current = array_keys((array) $domain->get('ns'));
@@ -344,12 +344,6 @@ $app->patch('/v1/domains/{name}', function (Request $request, Response $response
                 }
                 foreach (array_diff($current, $target) as $rem) $domain->remNS($rem);
             }
-            if (array_key_exists('tech', $params)) {
-                $current = array_keys((array) $domain->get('tech'));
-                $target = (array) $params['tech'];
-                foreach (array_diff($target, $current) as $add) $domain->addTECH($add);
-                foreach (array_diff($current, $target) as $rem) $domain->remTECH($rem);
-            }
             if (array_key_exists('dnssec', $params)) {
                 $error = DomainService::applyDnssec($domain, $dnssec);
                 if ($error !== null) {
@@ -361,6 +355,10 @@ $app->patch('/v1/domains/{name}', function (Request $request, Response $response
             // beforehand
             $changes = $domain->changedFields();
             $warnings = [];
+
+            if ($changes === [] && (array_key_exists('admin', $params) || array_key_exists('tech', $params))) {
+                return ['ok' => true, 'domain' => $domain, 'warnings' => $warnings];
+            }
 
             // the new NS set's zone is prepared first, so the registry's DNS
             // check finds it answering; the old set is what undo() restores
@@ -679,7 +677,7 @@ $app->post('/v1/domains/{name}/transfer', function (Request $request, Response $
                 return ['ok' => false, 'error' => $domain->getError()];
             }
 
-            DomainService::recordTransferRequest($name, $registrant, (array) ($params['tech'] ?? []), (array) ($params['ns'] ?? []));
+            DomainService::recordTransferRequest($name, $registrant, (array) ($params['ns'] ?? []));
             return ['ok' => true];
         }, $debug);
     } catch (\RuntimeException $e) {

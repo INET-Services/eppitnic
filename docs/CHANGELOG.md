@@ -1,5 +1,103 @@
 # Changelog
 
+## Version 7.1.0
+7.1 makes the backend compatible with the .it Registry Technical Guidelines
+v4.0: no administrative or technical contacts, no fax number, and `name`
+equal to `org` on every contact. It also adds password reset by e-mail,
+per-user session lengths and CLI verbs for user and contact housekeeping. The
+schema upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
+
+### Registry Technical Guidelines v4.0
+
+- Domain create and update never send `admin` or `tech` contacts. The API
+  (`admin`, `tech`), the CLI (`--admin`, `--tech`, `--add-tech`, `--rem-tech`),
+  the reseller `techc` default and `fax` are still accepted and ignored. An
+  update with nothing else to change is a no-op success (`domain update`
+  says "nothing to do").
+- A transfer-in does not reconcile technical contacts, and moving a domain to
+  another reseller duplicates only the registrant.
+- `domain info --contacts` and `Domain::fetch()` accept `all` or `registrant`.
+- `selftest` creates only company registrants and its domain update changes
+  only a nameserver.
+
+### Contacts and domains
+
+- A contact needs an entity type of 1 to 7 and its registrant details; entity
+  type 0 is refused before the registry is asked. `contact create` requires
+  `--entitytype` and `--nationalitycode`.
+- `name` and `org` must be the same: give one and the other is copied, give
+  both different and the create is refused with "name and org must be the
+  same" (`400` on the API, a usage error on the CLI). An update never sends
+  either and refuses a change with "name and org cannot be changed once the
+  contact exists".
+- Reseller defaults gain `entitytype`, the contact type new contacts start
+  from, and `dnssec_algorithm` and `dnssec_digesttype`, the values a new DS
+  record starts from (`GET/PUT /v1/resellers/{id}/settings`).
+- `GET /v1/domains` rows carry `ex_date` (`YYYY-MM-DD`, `null` for a
+  transfer-in row).
+- `contacts.email` holds 256 characters and `contacts.regcode` 36. Registry
+  data longer than a column is refused with a message naming the object,
+  field and limit instead of failing silently or being truncated.
+  `Validate::maxLength` counts characters, not bytes.
+- `contact create --store`, `contact update --store`, `domain set-registrant`
+  and `domain import` report a failed local write.
+
+### Users and sessions
+
+- `users.email` is required, unique (case-insensitively) and 256 characters
+  wide: `POST` and `PUT /v1/users` refuse a missing, malformed or used address
+  with `400`. The first admin `eppitnic setup` creates still takes an
+  optional address.
+- Forgot password: `POST /v1/users/password-reset` mails a single-use link,
+  valid 10 minutes, to the account's address and always answers `202`;
+  `GET /v1/users/password-reset/{token}` and `POST
+  /v1/users/password-reset/confirm` check and use it. The link goes to the
+  request's allowed `Origin`, `Referer` or body `origin`, never the `Host`, so
+  that origin must be in `allowed_origins`. Requests are rate-limited per
+  network and per address, confirmations per network.
+- `GET /v1/network-check` gains `password_reset`, true while SMTP is
+  configured and remote authentication is off.
+- Token lifetime: `users.token_lifetime` is the user's own choice from 5, 10,
+  15, 30, 60, 90, 120 or 240 minutes, default 15, set with
+  `PATCH /v1/users/{id}/session`. `max_token_age` is the limit an admin or
+  manager sets from the same list (default 240); a token lives for the smaller
+  of the two, and `renew-token` re-reads both from the account.
+- `POST /v1/session/adopt-password` stores a registry password that is already
+  valid there, after a login with it, like `config epp-password --force`. The
+  Settings page offers it next to the rotation.
+- Adopting a password tells a rejected credential (EPP `2200` / reason
+  `6005`, API `400`) from a login the registry refused for another reason (IP
+  not allowed, session limit; API `502`), and drops the shared registry
+  session afterwards so the next call logs in with the new password.
+
+### CLI
+
+- `user create` requires `--email`.
+- `user password` (`--password`, `--password-stdin`, `--generate`, or a hidden
+  prompt; `--must-change-password`), `user activate` and `user deactivate`
+  apply the API's password policy and its last-admin, last-manager and reach
+  rules, shared in `UserRules`, and record history without the password.
+- `config epp-password` takes the password as `<new-password>`,
+  `--password-stdin` or, at a terminal, a hidden prompt asked twice.
+- `contact cleanup` clears `admin` and `tech` on domains, then deletes the
+  contacts no active domain or pending transfer uses as registrant, at the
+  registry and locally, for all resellers and regardless of `--user`. It
+  writes one `history` row with the counts; `--dry-run` lists them first.
+
+### Database
+
+Schema `070100`, applied automatically:
+
+- `contacts.email` widens to 256, `contacts.regcode` to 36 and `users.email`
+  to 256 with a unique key.
+- New columns `users.token_lifetime`, `resellers.entitytype`,
+  `resellers.dnssec_algorithm` and `resellers.dnssec_digesttype`.
+- New tables `password_resets` and `password_reset_attempts`.
+- The users.email upgrade turns empty addresses into NULL and, where several
+  users share one, keeps it on the lowest id and clears it on the others,
+  recording each in `history` ("duplicate address removed by the 7.1
+  upgrade"). Those users need an address before they can be saved again.
+
 ## Version 7.0.0
 7.0 turns the library into a self-contained registrar backend: a JSON/REST
 API with its own authentication, a single `bin/eppitnic` CLI, scheduled jobs,

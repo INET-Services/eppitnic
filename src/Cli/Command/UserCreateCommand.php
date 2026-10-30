@@ -26,7 +26,7 @@ final class UserCreateCommand extends Command
     public function options(): array {
         return [
             'password='       => 'plaintext password, hashed before storing (required)',
-            'email='          => 'contact e-mail address',
+            'email='          => 'e-mail address, unique among users; password resets are sent to it (required)',
             'description='    => 'free-text description',
             'role='           => 'admin, manager or user (default: user); admin only in reseller 1',
             'reseller='       => 'the reseller id the user belongs to, fixed from now on (default: 1)',
@@ -46,6 +46,10 @@ final class UserCreateCommand extends Command
         if ( ! $this->hasOption('password')) {
             throw new UsageError('--password is required');
         }
+        $email = $this->option('email');
+        if (($error = User::emailError($email)) !== null) {
+            throw new UsageError('--email: ' . $error);
+        }
 
         $role = (string) $this->option('role', 'user');
         $resellerId = (int) $this->option('reseller', 1);
@@ -60,7 +64,7 @@ final class UserCreateCommand extends Command
             $id = User::create(
                 username: $username,
                 password: (string) $this->option('password'),
-                email: $this->option('email'),
+                email: trim($email),
                 description: $this->option('description'),
                 resellerId: $resellerId,
                 role: $role,

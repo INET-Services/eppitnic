@@ -28,6 +28,14 @@ use Slim\Exception\HttpUnauthorizedException;
  */
 final class Auth
 {
+    /** Token lifetimes in minutes a user may pick; the first is not special. */
+    public const TOKEN_LIFETIMES = [5, 10, 15, 30, 60, 90, 120, 240];
+
+    public const DEFAULT_TOKEN_LIFETIME = 15;
+
+    /** Upper limit when `max_token_age` is unset: the largest listed value. */
+    public const MAX_TOKEN_LIFETIME = 240;
+
     /** @var \WeakMap<Request, object>|null verify()'s result, once per request */
     private static ?\WeakMap $verified = null;
 
@@ -158,7 +166,7 @@ final class Auth
      */
     private static function verifyRemoteUser(string $username, Request $request): object {
         $user = R::getRow("
-            SELECT id, username, debug, max_token_age, max_idle_time
+            SELECT id, username, debug, max_token_age, token_lifetime, max_idle_time
             FROM users
             WHERE username = :username
         ", [':username' => $username]);
@@ -176,6 +184,7 @@ final class Auth
                 'totp_verified' => false,
                 'debug'         => (bool) $user['debug'],
                 'max_token_age' => $user['max_token_age'],
+                'token_lifetime' => $user['token_lifetime'],
                 'max_idle_time' => $user['max_idle_time'],
                 'remote_auth'   => true,
             ],
@@ -419,19 +428,51 @@ final class Auth
     }
 
     /**
-     * Sign a new JWT for $data, adding the standard claims. The lifetime comes
-     * from $data['max_token_age'], in minutes, spelled like the users column;
-     * null or non-positive means the default, since 0 would already be expired.
+     * Read a submitted token lifetime.
      *
-     * @param array $data claims to embed (may include 'max_token_age', in
-     *              minutes, defaulting to 240)
+     * @return int|false|null minutes from TOKEN_LIFETIMES, null for "use the
+     *         default" (null or ''), false for anything else
+     */
+    public static function parseTokenLifetime(mixed $value): int|false|null {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (is_string($value) && ctype_digit($value)) {
+            $value = (int) $value;
+        }
+        return is_int($value) && in_array($value, self::TOKEN_LIFETIMES, true) ? $value : false;
+    }
+
+    /**
+     * The limit an admin or manager set (`max_token_age`), or the largest
+     * listed lifetime when none is set.
+     */
+    public static function tokenLifetimeLimit(mixed $maxTokenAge): int {
+        return (int) $maxTokenAge > 0 ? (int) $maxTokenAge : self::MAX_TOKEN_LIFETIME;
+    }
+
+    /**
+     * The lifetime a token gets: the user's own choice (default 15) held to
+     * the limit.
+     *
+     * @return int minutes
+     */
+    public static function effectiveTokenLifetime(mixed $tokenLifetime, mixed $maxTokenAge): int {
+        $own = (int) $tokenLifetime > 0 ? (int) $tokenLifetime : self::DEFAULT_TOKEN_LIFETIME;
+        return min($own, self::tokenLifetimeLimit($maxTokenAge));
+    }
+
+    /**
+     * Sign a new JWT for $data, adding the standard claims. The lifetime comes
+     * from $data['token_lifetime'] and $data['max_token_age'], in minutes,
+     * spelled like the users columns (see effectiveTokenLifetime()).
+     *
+     * @param array $data claims to embed (may include 'token_lifetime' and
+     *              'max_token_age')
      * @return array $data merged with the signed 'token' string
      */
     public static function issueToken(array $data): array {
-        $maxTokenAge = (int) ($data['max_token_age'] ?? 0);
-        if ($maxTokenAge <= 0) {
-            $maxTokenAge = 240;
-        }
+        $maxTokenAge = self::effectiveTokenLifetime($data['token_lifetime'] ?? null, $data['max_token_age'] ?? null);
 
         $iat = time();
         $nbf = $iat - 60 * 5;

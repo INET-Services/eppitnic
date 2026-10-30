@@ -202,6 +202,21 @@ final class PollProcessorTransferTest extends EppTestCase
         return serialize([['name' => 'ns1.example.it']]);
     }
 
+    public function testARowThatStillNamesTechContactsDoesNotApplyThem(): void {
+        $this->transfer('example-one.it', 'pending', serialize([['name' => 'ns1.example-one.it', 'ip' => ['192.0.2.9']]]));
+        R::exec("UPDATE transfers SET techc = ?", [serialize(['TECH-NEW'])]);
+        $this->message(1, 'clientApprovedTransfer', 'example-one.it');
+        $this->transport->queue(CommandCatalog::DOMAIN_INFO_RESPONSE);
+        $this->transport->queue(CommandCatalog::OK_RESPONSE);
+
+        $this->verify();
+
+        $sent = implode('', $this->transport->requests);
+        $this->assertStringContainsString('192.0.2.9', $sent);
+        $this->assertStringNotContainsString('domain:contact', $sent);
+        $this->assertStringNotContainsString('TECH-NEW', $sent);
+    }
+
     public function testARefusedUpdateStoresTheRegistrysDataAndKeepsTheNote(): void {
         $this->transfer('example-one.it', 'pending', $this->requestedNs());
         $this->message(1, 'clientApprovedTransfer', 'example-one.it');
@@ -253,6 +268,7 @@ final class PollProcessorTransferTest extends EppTestCase
         $body = FakeMailer::$sent[0]['body'];
         $this->assertStringContainsString('Object status prohibits operation', $body);
         $this->assertStringContainsString('Requested nameservers: ns1.example.it', $body);
+        $this->assertStringNotContainsString('tech contacts', $body);
         $this->assertStringContainsString('ns1.example-one.it (192.0.2.1), ns2.example.net', $body);
         $this->assertSame(0, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
         $this->assertTrue($this->archived(1));

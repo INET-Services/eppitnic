@@ -46,9 +46,13 @@ final class DomainImportCommand extends Command
         );
 
         foreach ($results as $name => $steps) {
-            $ok = $steps['domain_stored'] === 'stored';
+            $ok = $steps['domain_stored'] === 'stored' && $steps['contact_stored'] === 'stored';
             if ( ! $ok) {
                 $this->failures++;
+            }
+
+            if (isset($steps['error'])) {
+                $this->warn("{$name}: " . $steps['error']);
             }
 
             $this->record(

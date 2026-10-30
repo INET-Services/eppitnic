@@ -52,7 +52,7 @@ final class ContactLifecycle implements Scenario
 
         $created = $run->step('contact create', $handle, function () use ($run, $handle) {
             $contact = new Contact($run->nic);
-            ContactFactory::fill($contact, $handle, false);
+            ContactFactory::fill($contact, $handle);
 
             $run->ensure($contact->create(), $contact);
             $run->noteContact($handle, 'disposable');

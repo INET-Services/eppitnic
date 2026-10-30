@@ -16,9 +16,6 @@
           </domain:hostAttr>
         </domain:ns>
         <domain:registrant>REGI1234REGI5678</domain:registrant>
-        <domain:contact type="admin">ADMIN123ADMIN456</domain:contact>
-        <domain:contact type="tech">TECH1234TECH5678</domain:contact>
-        <domain:contact type="tech">TECH9012TECH3456</domain:contact>
         <domain:authInfo>
           <domain:pw>AUTHINFO12345678</domain:pw>
         </domain:authInfo>

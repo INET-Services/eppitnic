@@ -13,9 +13,9 @@ use Eppitnic\Tests\Support\EppTestCase;
  */
 final class SelftestContactFactoryTest extends EppTestCase
 {
-    private function filled(bool $isRegistrant): Contact {
+    private function filled(): Contact {
         $contact = new Contact($this->nic);
-        ContactFactory::fill($contact, 'STAAAAAAR1', $isRegistrant);
+        ContactFactory::fill($contact, 'STAAAAAAR1');
 
         return $contact;
     }
@@ -30,27 +30,23 @@ final class SelftestContactFactoryTest extends EppTestCase
      * person or a freelancer being published by law.
      */
     public function testACompanyRegistrantConsentsToPublication(): void {
-        $contact = $this->filled(true);
+        $contact = $this->filled();
 
         $this->assertSame(ContactFactory::ENTITY_COMPANY, (int) $contact->get('entitytype'));
         $this->assertSame(1, (int) $contact->get('consentforpublishing'), 'the registry would refuse this contact');
     }
 
-    /**
-     * An admin or tech contact carries no registrant block for the rule to
-     * apply to, so it can stay out of the whois.
-     */
-    public function testANonRegistrantKeepsItsDetailsUnpublished(): void {
-        $contact = $this->filled(false);
+    public function testNameAndOrgAreTheSame(): void {
+        $contact = $this->filled();
 
-        $this->assertSame(ContactFactory::ENTITY_NONE, (int) $contact->get('entitytype'));
-        $this->assertSame(0, (int) $contact->get('consentforpublishing'));
+        $this->assertNotSame('', $contact->get('name'));
+        $this->assertSame($contact->get('name'), $contact->get('org'));
     }
 
     public function testOnlyNaturalPersonsAndFreelancersMayWithholdConsent(): void {
         $this->assertTrue(ContactFactory::mayWithholdConsent(1), 'a natural person may');
         $this->assertTrue(ContactFactory::mayWithholdConsent(3), 'a freelancer may');
-        $this->assertTrue(ContactFactory::mayWithholdConsent(ContactFactory::ENTITY_NONE), 'a non-registrant has no block');
+        $this->assertFalse(ContactFactory::mayWithholdConsent(0), 'entity type 0 no longer exists');
 
         foreach ([2, 4, 5, 6, 7] as $entityType) {
             $this->assertFalse(
@@ -65,7 +61,7 @@ final class SelftestContactFactoryTest extends EppTestCase
     // ---------------------------------------------------------------
 
     public function testARegistrantCarriesTheFieldsExtconRequires(): void {
-        $contact = $this->filled(true);
+        $contact = $this->filled();
 
         $this->assertSame('IT', $contact->get('nationalitycode'));
         $this->assertNotSame('', $contact->get('regcode'));
@@ -145,20 +141,9 @@ final class SelftestContactFactoryTest extends EppTestCase
         return $sum % 10 === 0;
     }
 
-    /**
-     * Sending a registration code with entity type 0 is a contradiction the
-     * registry would be right to reject.
-     */
-    public function testANonRegistrantCarriesNoRegistrationCode(): void {
-        $contact = $this->filled(false);
-
-        $this->assertSame('', $contact->get('regcode'));
-        $this->assertSame('', $contact->get('nationalitycode'));
-    }
-
     public function testEveryContactGetsAnAuthinfo(): void {
-        $this->assertNotSame('', $this->filled(true)->get('authinfo'));
-        $this->assertNotSame('', $this->filled(false)->get('authinfo'));
+        $this->assertNotSame('', $this->filled()->get('authinfo'));
+        $this->assertNotSame('', $this->filled()->get('authinfo'));
     }
 
     /**
@@ -166,24 +151,24 @@ final class SelftestContactFactoryTest extends EppTestCase
      * can reach a real mailbox even if the registry mails it.
      */
     public function testTheAddressCannotReachAnybody(): void {
-        $this->assertStringEndsWith('@example.it', (string) $this->filled(true)->get('email'));
+        $this->assertStringEndsWith('@example.it', (string) $this->filled()->get('email'));
     }
 
     /**
-     * The update has to touch a postalInfo field, an address field and a plain
-     * contact field at once: one that moved only a single kind would not
-     * notice a builder that dropped one of the others.
+     * The update has to touch an address field and a plain contact field at
+     * once, and never name or org, which the registry fixes at creation.
      */
     public function testTheUpdateCoversEachKindOfField(): void {
         $changes = ContactFactory::changes('STAAAAAAD1');
 
-        $this->assertArrayHasKey('name', $changes);   // postalInfo
+        $this->assertArrayNotHasKey('name', $changes);
+        $this->assertArrayNotHasKey('org', $changes);
         $this->assertArrayHasKey('city', $changes);   // addr
         $this->assertArrayHasKey('voice', $changes);  // contact
     }
 
     public function testTheUpdateActuallyChangesSomething(): void {
-        $contact = $this->filled(false);
+        $contact = $this->filled();
 
         foreach (ContactFactory::changes('STAAAAAAR1') as $field => $value) {
             $this->assertNotSame($value, $contact->get($field), "{$field} was already at its updated value");

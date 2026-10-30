@@ -6,8 +6,8 @@ use Eppitnic\Epp\Contact;
 
 /**
  * The contacts a self-test run creates -- fabricated, but plausible enough for
- * nic.it's extcon validation: a registrant needs nationality, entity type and
- * reg code, an admin or tech contact is type 0 and carries none of them.
+ * nic.it's extcon validation: every contact is a registrant, with nationality,
+ * entity type and reg code, and its org equal to its name.
  *
  * @category    Net
  * @package     Eppitnic\Selftest\ContactFactory
@@ -18,9 +18,6 @@ final class ContactFactory
 {
     /** an Italian company: the entity type that needs a registration code */
     public const ENTITY_COMPANY = 2;
-
-    /** an admin or tech contact, which carries no registrant details */
-    public const ENTITY_NONE = 0;
 
     /**
      * The entity types that may stay out of the public whois: 1 (natural
@@ -39,15 +36,14 @@ final class ContactFactory
      *
      * @param Contact $contact a fresh contact
      * @param string $handle the handle this run gave it
-     * @param bool $isRegistrant whether it needs the extcon registrant block
      */
-    public static function fill(Contact $contact, string $handle, bool $isRegistrant): void {
-        $entityType = $isRegistrant ? self::ENTITY_COMPANY : self::ENTITY_NONE;
+    public static function fill(Contact $contact, string $handle): void {
+        $entityType = self::ENTITY_COMPANY;
 
         $contact->set('handle', $handle);
 
         $contact->set('name', 'Selftest ' . $handle);
-        $contact->set('org', 'Eppitnic Selftest');
+        $contact->set('org', 'Selftest ' . $handle);
         $contact->set('street', 'Via Roma 1');
         $contact->set('city', 'Bolzano');
         $contact->set('province', 'BZ');
@@ -58,11 +54,9 @@ final class ContactFactory
         // writes can reach a real mailbox even if the registry mails it
         $contact->set('email', strtolower($handle) . '@example.it');
 
-        if ($entityType !== self::ENTITY_NONE) {
-            $contact->set('nationalitycode', 'IT');
-            $contact->set('entitytype', $entityType);
-            $contact->set('regcode', self::registrationCode($handle));
-        }
+        $contact->set('nationalitycode', 'IT');
+        $contact->set('entitytype', $entityType);
+        $contact->set('regcode', self::registrationCode($handle));
 
         // A test contact has no business in the public whois -- but only the
         // entity types that are allowed to withhold consent may say so, and
@@ -119,25 +113,21 @@ final class ContactFactory
 
     /**
      * Whether this entity type is allowed to keep its details unpublished.
-     *
-     * Entity type 0 is not a registrant at all -- it carries no extcon
-     * registrant block for the rule to apply to.
      */
     public static function mayWithholdConsent(int $entityType): bool {
-        return $entityType === self::ENTITY_NONE
-            || in_array($entityType, self::MAY_WITHHOLD_CONSENT, true);
+        return in_array($entityType, self::MAY_WITHHOLD_CONSENT, true);
     }
 
     /**
      * What a self-test changes on an update and expects to read back -- one
-     * postalInfo, one address and one plain contact field, since moving only
-     * one would not notice a builder that dropped the others.
+     * address and one plain contact field, since moving only one would not
+     * notice a builder that dropped the other. name and org are fixed at
+     * creation and never part of it.
      *
      * @return array<string, string> field => new value
      */
     public static function changes(string $handle): array {
         return [
-            'name'  => 'Selftest ' . $handle . ' (updated)',
             'city'  => 'Merano',
             'voice' => '+39.0473000000',
         ];

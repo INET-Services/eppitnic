@@ -7,7 +7,9 @@ use Eppitnic\Config;
 use Eppitnic\Persistence\History;
 use Eppitnic\Persistence\User;
 use Eppitnic\Persistence\UsernameTaken;
+use Eppitnic\Persistence\UserRules;
 use Eppitnic\Service\EppSettings;
+use Eppitnic\Service\PasswordReset;
 use Eppitnic\Support\PasswordPolicy;
 use Eppitnic\Support\PasswordGenerator;
 use Eppitnic\Support\Validate;
@@ -21,7 +23,14 @@ $app->get('/v1/users/renew-token', function (Request $request, Response $respons
     if ( ! empty($decoded->data->remote_auth)) {
         return Json::response($response, ['error' => 'Token renewal is not available with remote authentication'], 400);
     }
-    return Json::response($response, Auth::issueToken((array) $decoded->data));
+    $claims = (array) $decoded->data;
+    $row = R::getRow('SELECT max_token_age, token_lifetime, max_idle_time FROM users WHERE id = ?', [(int) ($claims['id'] ?? 0)]);
+    if ( ! empty($row)) {
+        $claims['max_token_age'] = $row['max_token_age'];
+        $claims['token_lifetime'] = $row['token_lifetime'];
+        $claims['max_idle_time'] = $row['max_idle_time'];
+    }
+    return Json::response($response, Auth::issueToken($claims));
 });
 
 $app->get('/v1/users/me', function (Request $request, Response $response, array $args): Response {
@@ -70,7 +79,7 @@ $checkCredentials = static function (Request $request, Response $response): arra
 
     $user = R::getAll("SELECT
         u.id, u.role, u.reseller_id, r.name AS reseller_name, r.active AS reseller_active,
-        u.username, u.password, u.must_change_password, u.must_enroll_mfa, u.totp_secret, u.debug, u.max_token_age, u.max_idle_time
+        u.username, u.password, u.must_change_password, u.must_enroll_mfa, u.totp_secret, u.debug, u.max_token_age, u.token_lifetime, u.max_idle_time
     FROM users u JOIN resellers r ON r.id = u.reseller_id
     WHERE u.username = :username AND u.active = 1", [
         ':username' => $username,
@@ -186,6 +195,7 @@ $continueLogin = static function (Request $request, Response $response, array $u
         'totp_verified' => $needsTotp || $codeChecked,
         'debug'         => (bool) $user['debug'],
         'max_token_age'   => $user['max_token_age'],
+        'token_lifetime'  => $user['token_lifetime'],
         'max_idle_time'   => $user['max_idle_time'],
         'registry'        => EppSettings::environment(),
     ]));
@@ -232,6 +242,54 @@ $app->post('/v1/users/authenticate/password', function (Request $request, Respon
     ], 'rotate');
 
     return $continueLogin($request, $response, $user);
+});
+
+/**
+ * Always the same answer, whatever the address: 202 and nothing else. The
+ * work runs after the response where the SAPI allows it.
+ */
+$app->post('/v1/users/password-reset', function (Request $request, Response $response, array $args): Response {
+    $params = $request->getParsedBody() ?? [];
+    $email  = is_string($params['email'] ?? null) ? $params['email'] : '';
+    $locale = is_string($params['locale'] ?? null) ? $params['locale'] : 'en';
+    $origin = PasswordReset::linkOrigin($request, $params['origin'] ?? null);
+
+    if (PasswordReset::available()) {
+        PasswordReset::afterResponse(static function () use ($email, $locale, $origin): void {
+            PasswordReset::request($email, $locale, $origin);
+        });
+    } else {
+        error_log('password reset: mail is not configured or logins are remote, nothing sent');
+    }
+
+    return Json::response($response, ['ok' => true], 202);
+});
+
+/**
+ * @return Response the answer to a reset link's outcome
+ */
+$resetAnswer = static function (Response $response, array $outcome): Response {
+    return match ($outcome[0]) {
+        'ok'      => Json::response($response, ['ok' => true, 'password_policy' => PasswordPolicy::describe()]),
+        'weak'    => Json::response($response, [
+            'error'           => $outcome[1],
+            'password_policy' => PasswordPolicy::describe(),
+        ], 400),
+        'limited' => Json::response($response, ['error' => 'Too many attempts. Try again later.'], 429),
+        default   => Json::response($response, ['error' => PasswordReset::INVALID], 400),
+    };
+};
+
+$app->get('/v1/users/password-reset/{token}', function (Request $request, Response $response, array $args) use ($resetAnswer): Response {
+    return $resetAnswer($response, [PasswordReset::check((string) $args['token'])]);
+});
+
+$app->post('/v1/users/password-reset/confirm', function (Request $request, Response $response, array $args) use ($resetAnswer): Response {
+    $params = $request->getParsedBody() ?? [];
+    $token  = is_string($params['token'] ?? null) ? $params['token'] : '';
+    $password = is_string($params['password'] ?? null) ? $params['password'] : '';
+
+    return $resetAnswer($response, PasswordReset::confirm($token, $password));
 });
 
 /**
@@ -322,29 +380,6 @@ $notAuthorized = static function (Response $response): Response {
     return Json::response($response, ['error' => 'You are not authorized to perform this operation'], 403);
 };
 
-/**
- * Whether the last active manager of $resellerId must stay: only while the
- * reseller itself is active -- a deactivated one has nobody left to manage.
- */
-$managerNeeded = static function (int $resellerId): bool {
-    return (int) R::getCell('SELECT active FROM resellers WHERE id = ?', [$resellerId]) === 1;
-};
-
-/**
- * How many other ACTIVE users hold $role -- in $resellerId if given, else
- * anywhere -- so the last admin or the last manager of a reseller can be
- * told apart from one of several.
- */
-$activeCount = static function (string $role, ?int $resellerId, int $excludeId): int {
-    $sql = "SELECT COUNT(*) FROM users WHERE role = :role AND active = 1 AND id <> :id";
-    $bind = [':role' => $role, ':id' => $excludeId];
-    if ($resellerId !== null) {
-        $sql .= " AND reseller_id = :reseller_id";
-        $bind[':reseller_id'] = $resellerId;
-    }
-    return (int) R::getCell($sql, $bind);
-};
-
 $app->get('/v1/users', function (Request $request, Response $response, array $args) use ($visibleUsers): Response {
     $actor = Auth::actor($request);
     [$where, $bind] = $visibleUsers($actor, $request->getQueryParams());
@@ -428,12 +463,10 @@ $userFieldError = static function (array $params): ?string {
             return 'username must be at most 32 characters';
         }
     }
-    if (isset($params['email']) && $params['email'] !== '') {
-        if ( ! is_string($params['email']) || ! Validate::isEmail($params['email']) || mb_strlen($params['email']) > 64) {
-            return 'email must be a valid address of at most 64 characters';
-        }
+    if (Auth::parseTokenLifetime($params['max_token_age'] ?? null) === false) {
+        return 'max_token_age (the maximum) must be null or one of ' . implode(', ', Auth::TOKEN_LIFETIMES) . ' (minutes)';
     }
-    foreach (['max_token_age', 'max_idle_time'] as $field) {
+    foreach (['max_idle_time'] as $field) {
         $value = $params[$field] ?? null;
         if ($value !== null && ! (is_int($value) && $value >= 0) && ! (is_string($value) && ctype_digit($value))) {
             return "{$field} must be null or a non-negative whole number";
@@ -442,7 +475,7 @@ $userFieldError = static function (array $params): ?string {
     return null;
 };
 
-$app->put('/v1/users/{id}', function (Request $request, Response $response, array $args) use ($notAuthorized, $activeCount, $managerNeeded, $userFieldError): Response {
+$app->put('/v1/users/{id}', function (Request $request, Response $response, array $args) use ($notAuthorized, $userFieldError): Response {
     $actor = Auth::requireManager($request);
     $targetId = (int) $args['id'];
     $params = $request->getParsedBody() ?? [];
@@ -458,7 +491,7 @@ $app->put('/v1/users/{id}', function (Request $request, Response $response, arra
     // a manager reaches only a non-admin user of their own reseller, and may
     // not hand out role=admin or debug -- an admin's own request is unrestricted
     if ( ! $actor['isAdmin']) {
-        if ((int) $current['reseller_id'] !== $actor['resellerId'] || $current['role'] === 'admin') {
+        if ( ! UserRules::reachable($actor['scope'], $current)) {
             return $notAuthorized($response);
         }
         if ((isset($params['role']) && $params['role'] === 'admin') || array_key_exists('debug', $params)) {
@@ -467,6 +500,11 @@ $app->put('/v1/users/{id}', function (Request $request, Response $response, arra
     }
 
     if (($error = $userFieldError($params)) !== null) {
+        return Json::response($response, ['error' => $error], 400);
+    }
+
+    $email = $params['email'] ?? $current['email'];
+    if (($error = User::emailError($email, $targetId)) !== null) {
         return Json::response($response, ['error' => $error], 400);
     }
 
@@ -499,14 +537,8 @@ $app->put('/v1/users/{id}', function (Request $request, Response $response, arra
     // below, so it is this message a sole admin/manager gets, not the generic one
     $rank = ['user' => 0, 'manager' => 1, 'admin' => 2];
     $demoted = $rank[$role] < $rank[$current['role']];
-    if ($current['role'] === 'admin' && ($demoted || $active === 0)
-        && $activeCount('admin', null, $targetId) === 0) {
-        return Json::response($response, ['error' => 'cannot demote or deactivate the last active admin'], 400);
-    }
-    if ($current['role'] === 'manager' && ($demoted || $active === 0)
-        && $activeCount('manager', (int) $current['reseller_id'], $targetId) === 0
-        && $managerNeeded((int) $current['reseller_id'])) {
-        return Json::response($response, ['error' => 'cannot demote or deactivate the last active manager of an active reseller'], 400);
+    if (($error = UserRules::lastStandingError($current + ['id' => $targetId], $demoted, $active === 0)) !== null) {
+        return Json::response($response, ['error' => $error], 400);
     }
 
     // nobody, admin included, may touch their own role or deactivate themselves
@@ -515,18 +547,19 @@ $app->put('/v1/users/{id}', function (Request $request, Response $response, arra
             return Json::response($response, ['error' => 'you cannot change your own role'], 400);
         }
         if ($active !== (int) $current['active']) {
-            return Json::response($response, ['error' => 'you cannot deactivate yourself'], 400);
+            return Json::response($response, ['error' => UserRules::SELF_DEACTIVATION], 400);
         }
     }
 
     $fields = [
         'description'    => $params['description'] ?? $current['description'],
         'username'       => $username,
-        'email'          => $params['email'] ?? $current['email'],
+        'email'          => trim($email),
         'active'         => $active,
         'role'           => $role,
         'notify_enabled' => (int) ($params['notify_enabled'] ?? $current['notify_enabled']),
-        'max_token_age'  => $params['max_token_age'] ?? $current['max_token_age'],
+        'max_token_age'  => array_key_exists('max_token_age', $params)
+            ? Auth::parseTokenLifetime($params['max_token_age']) : $current['max_token_age'],
         'max_idle_time'  => $params['max_idle_time'] ?? $current['max_idle_time'],
         'debug'          => (int) ($params['debug'] ?? $current['debug']),
         'must_change_password' => (int) ($params['must_change_password'] ?? $current['must_change_password']),
@@ -565,6 +598,9 @@ $app->post('/v1/users', function (Request $request, Response $response, array $a
         return Json::response($response, ['error' => $err], 400);
     }
     if (($error = $userFieldError($params)) !== null) {
+        return Json::response($response, ['error' => $error], 400);
+    }
+    if (($error = User::emailError($params['email'] ?? null)) !== null) {
         return Json::response($response, ['error' => $error], 400);
     }
 
@@ -608,7 +644,7 @@ $app->post('/v1/users', function (Request $request, Response $response, array $a
         $id = User::create(
             username: $params['username'],
             password: (string) $params['password'],
-            email: isset($params['email']) && $params['email'] !== '' ? $params['email'] : null,
+            email: trim($params['email']),
             description: $params['description'] ?? null,
             resellerId: $resellerId,
             role: $role,
@@ -616,7 +652,7 @@ $app->post('/v1/users', function (Request $request, Response $response, array $a
             mustEnrollMfa: (bool) (int) ($params['must_enroll_mfa'] ?? 0),
             actorId: $actor['id'],
             active: (bool) (int) ($params['active'] ?? 1),
-            maxTokenAge: $optionalInt($params['max_token_age'] ?? null),
+            maxTokenAge: Auth::parseTokenLifetime($params['max_token_age'] ?? null),
             maxIdleTime: $optionalInt($params['max_idle_time'] ?? null),
             debug: (bool) (int) ($params['debug'] ?? 0),
             notifyEnabled: isset($params['notify_enabled']) ? (bool) (int) $params['notify_enabled'] : null,
@@ -633,7 +669,7 @@ $app->post('/v1/users', function (Request $request, Response $response, array $a
     ], 201);
 });
 
-$app->delete('/v1/users/{id}', function (Request $request, Response $response, array $args) use ($notAuthorized, $activeCount, $managerNeeded): Response {
+$app->delete('/v1/users/{id}', function (Request $request, Response $response, array $args) use ($notAuthorized): Response {
     $actor = Auth::requireManager($request);
     $targetId = (int) $args['id'];
 
@@ -642,25 +678,20 @@ $app->delete('/v1/users/{id}', function (Request $request, Response $response, a
         return Json::response($response, ['error' => 'User not found'], 404);
     }
 
-    if ( ! $actor['isAdmin'] && ((int) $current['reseller_id'] !== $actor['resellerId'] || $current['role'] === 'admin')) {
+    if ( ! $actor['isAdmin'] && ! UserRules::reachable($actor['scope'], $current)) {
         return $notAuthorized($response);
     }
 
     // same last-one-standing guard as PUT .../active=0, checked before the
     // self-guard below; a no-op deactivation of someone already inactive
     // never trips it
-    if ((int) $current['active'] === 1) {
-        if ($current['role'] === 'admin' && $activeCount('admin', null, $targetId) === 0) {
-            return Json::response($response, ['error' => 'cannot demote or deactivate the last active admin'], 400);
-        }
-        if ($current['role'] === 'manager' && $activeCount('manager', (int) $current['reseller_id'], $targetId) === 0
-            && $managerNeeded((int) $current['reseller_id'])) {
-            return Json::response($response, ['error' => 'cannot demote or deactivate the last active manager of an active reseller'], 400);
-        }
+    if ((int) $current['active'] === 1
+        && ($error = UserRules::lastStandingError($current + ['id' => $targetId], false, true)) !== null) {
+        return Json::response($response, ['error' => $error], 400);
     }
 
     if ($targetId === $actor['id']) {
-        return Json::response($response, ['error' => 'you cannot deactivate yourself'], 400);
+        return Json::response($response, ['error' => UserRules::SELF_DEACTIVATION], 400);
     }
 
     R::exec("UPDATE users SET active = 0 WHERE id = :id", [

@@ -39,7 +39,7 @@ final class EscapingTest extends EppTestCase
 
         $contact = new Contact($this->nic);
         $contact->set('handle', 'ABCD1234EFGH5678');
-        $contact->set('name', 'Mario Rossi');
+        $contact->set('name', $value);
         $contact->set('org', $value);
         $contact->set('street', 'Via Roma 1');
         $contact->set('city', 'Bolzano');
@@ -48,6 +48,9 @@ final class EscapingTest extends EppTestCase
         $contact->set('countrycode', 'IT');
         $contact->set('voice', '+39.0471000000');
         $contact->set('email', 'mario.rossi@example.it');
+        $contact->set('nationalitycode', 'IT');
+        $contact->set('entitytype', 2);
+        $contact->set('regcode', '01234567890');
         $contact->create();
 
         // what the registry's parser will see, not what the bytes look like

@@ -41,6 +41,7 @@ final class TestAccounts
             'active'               => 'INTEGER DEFAULT 1',
             'debug'                => 'INTEGER DEFAULT 0',
             'max_token_age'        => 'INTEGER',
+            'token_lifetime'       => 'INTEGER',
             'max_idle_time'        => 'INTEGER',
             'last_activity'        => 'TEXT',
             'totp_secret'          => 'TEXT',
@@ -61,13 +62,15 @@ final class TestAccounts
 
         R::exec('INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)', [$id, $username ?? "user{$id}"]);
         R::exec('UPDATE users SET reseller_id = ?, role = ?, active = 1 WHERE id = ?', [$resellerId, $role, $id]);
+        R::exec('UPDATE users SET email = ? WHERE id = ? AND email IS NULL', ["user{$id}@example.test", $id]);
     }
 
     public static function ensureReseller(int $id, ?string $name = null, int $maxOperations = 0): void {
         R::exec('CREATE TABLE IF NOT EXISTS resellers (
             id INTEGER PRIMARY KEY, name TEXT NOT NULL, max_operations INTEGER NOT NULL DEFAULT 0,
             active INTEGER NOT NULL DEFAULT 1, creation_time TEXT DEFAULT CURRENT_TIMESTAMP,
-            techc TEXT, countrycode TEXT, nssets TEXT, dnsset TEXT)');
+            techc TEXT, countrycode TEXT, entitytype INTEGER, nssets TEXT, dnsset TEXT,
+            dnssec_algorithm INTEGER, dnssec_digesttype INTEGER)');
         R::exec('INSERT OR IGNORE INTO resellers (id, name, max_operations) VALUES (?, ?, ?)', [
             $id, $name ?? ($id === 1 ? 'Registrar (self)' : "Reseller {$id}"), $maxOperations,
         ]);

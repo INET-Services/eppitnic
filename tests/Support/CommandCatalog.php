@@ -14,6 +14,15 @@ use Eppitnic\Epp\Session;
  */
 final class CommandCatalog
 {
+    /** a refused <login>, as the .it registry answers it */
+    public static function loginRefusal(string $code, string $msg, string $reasonCode, string $reason): string {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>'
+            . '<epp xmlns="urn:ietf:params:xml:ns:epp-1.0" xmlns:extepp="http://www.nic.it/ITNIC-EPP/extepp-2.0">'
+            . "<response><result code=\"{$code}\"><msg lang=\"en\">{$msg}</msg><extValue><value>"
+            . "<extepp:reasonCode>{$reasonCode}</extepp:reasonCode></value><reason lang=\"en\">{$reason}</reason>"
+            . '</extValue></result><trID><svTRID>x</svTRID></trID></response></epp>';
+    }
+
     /** a response ExecuteQuery() can parse without complaint */
     public const OK_RESPONSE = <<<'XML'
     <?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -289,27 +298,12 @@ final class CommandCatalog
 
             'contact-update' => function (Client $nic, FakeTransport $t): object {
                 $t->queue(self::OK_RESPONSE);
-                $c = self::populateContact(new Contact($nic));
+                $c = self::populateContact(new Contact($nic), false);
                 $c->update();
                 return $c;
             },
 
-            // An explicit clear: fax is set to a value and then to '', so the
-            // change flag is set *and* the value is empty. This must emit
-            // <contact:fax/>, EPP's "remove it".
-            'contact-update-clear-fax' => function (Client $nic, FakeTransport $t): object {
-                $t->queue(self::OK_RESPONSE);
-                $c = new Contact($nic);
-                $c->set('handle', 'ABCD1234EFGH5678');
-                $c->set('fax', '+39.0471000001');
-                $c->set('fax', '');
-                $c->update();
-                return $c;
-            },
-
-            // The counterpart: only the email changes, fax is never mentioned.
-            // This must emit no <contact:fax> element at all -- emitting an
-            // empty one would delete a fax number the caller never touched.
+            // Only the email changes: nothing else may appear on the wire.
             'contact-update-email-only' => function (Client $nic, FakeTransport $t): object {
                 $t->queue(self::OK_RESPONSE);
                 $c = new Contact($nic);
@@ -451,10 +445,12 @@ final class CommandCatalog
      * ones -- a fixture that only covers required fields protects only the
      * paths that were never in doubt
      */
-    private static function populateContact(Contact $c): Contact {
+    private static function populateContact(Contact $c, bool $withNames = true): Contact {
         $c->set('handle', 'ABCD1234EFGH5678');
-        $c->set('name', 'Mario Rossi');
-        $c->set('org', 'Rossi & Figli S.r.l.');
+        if ($withNames) {
+            $c->set('name', 'Rossi & Figli S.r.l.');
+            $c->set('org', 'Rossi & Figli S.r.l.');
+        }
         $c->set('street', 'Via Roma 1');
         $c->set('street2', 'Scala B');
         $c->set('street3', 'Interno 3');
@@ -475,7 +471,7 @@ final class CommandCatalog
 
     /**
      * a domain with two nameservers (one glued, one not), an admin and two
-     * technical contacts
+     * technical contacts, which never reach the wire
      */
     private static function populateDomain(Domain $d): Domain {
         $d->set('domain', 'example-one.it');

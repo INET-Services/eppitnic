@@ -6,8 +6,6 @@
         <contact:id>ABCD1234EFGH5678</contact:id>
         <contact:chg>
           <contact:postalInfo type="loc">
-            <contact:name>Mario Rossi</contact:name>
-            <contact:org>Rossi &amp; Figli S.r.l.</contact:org>
             <contact:addr>
               <contact:street>Via Roma 1</contact:street>
               <contact:street>Scala B</contact:street>
@@ -19,7 +17,6 @@
             </contact:addr>
           </contact:postalInfo>
           <contact:voice>+39.0471000000</contact:voice>
-          <contact:fax>+39.0471000001</contact:fax>
           <contact:email>mario.rossi@example.it</contact:email>
           <contact:authInfo>
             <contact:pw>AUTHINFO12345678</contact:pw>

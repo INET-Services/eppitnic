@@ -6,10 +6,11 @@ use RedBeanPHP\R;
 
 /**
  * What a reseller has on file for filling in new contacts and domains: a
- * default country, default technical contacts, and named sets of nameservers
- * with one of them as the default. Stored on the `resellers` row
- * (countrycode, techc, nssets, dnsset); every method returns data and leaves
- * reporting to the caller.
+ * default country and contact type, default technical contacts, named sets of
+ * nameservers with one of them as the default, and the DNSSEC algorithm and
+ * digest type for new DS records. Stored on the `resellers` row (countrycode,
+ * entitytype, techc, nssets, dnsset, dnssec_algorithm, dnssec_digesttype);
+ * every method returns data and leaves reporting to the caller.
  *
  * @category    Net
  * @package     Eppitnic\Service\ResellerSettings
@@ -18,6 +19,10 @@ use RedBeanPHP\R;
  */
 final class ResellerSettings
 {
+    /** What the .it registry accepts for a DS record. */
+    public const DNSSEC_ALGORITHMS = [3, 5, 6, 7, 8, 10, 12, 13, 14];
+    public const DNSSEC_DIGEST_TYPES = [1, 2, 3, 4];
+
     public const MAX_TECH = 6;
     public const MIN_NAMESERVERS = 2;
     public const MAX_NAMESERVERS = 6;
@@ -69,25 +74,29 @@ final class ResellerSettings
     }
 
     /**
-     * @return array{countrycode: string, techc: string[], dnsset: string, nssets: array}|null
+     * @return array{countrycode: string, entitytype: int|null, techc: string[], dnsset: string, nssets: array, dnssec_algorithm: int|null, dnssec_digesttype: int|null}|null
      *         null if there is no such reseller
      */
     public static function load(int $resellerId): ?array {
-        $row = R::getRow("SELECT countrycode, techc, nssets, dnsset FROM resellers WHERE id = ?", [$resellerId]);
+        $row = R::getRow("SELECT countrycode, entitytype, techc, nssets, dnsset, dnssec_algorithm, dnssec_digesttype FROM resellers WHERE id = ?", [$resellerId]);
         if (empty($row)) {
             return null;
         }
 
         return [
             'countrycode' => (string) ($row['countrycode'] ?? ''),
+            'entitytype'  => isset($row['entitytype']) ? (int) $row['entitytype'] : null,
             'techc'       => self::decodeTech($row['techc'] ?? null),
             'dnsset'      => (string) ($row['dnsset'] ?? ''),
             'nssets'      => self::decodeSets($row['nssets'] ?? null),
+            'dnssec_algorithm'  => isset($row['dnssec_algorithm']) ? (int) $row['dnssec_algorithm'] : null,
+            'dnssec_digesttype' => isset($row['dnssec_digesttype']) ? (int) $row['dnssec_digesttype'] : null,
         ];
     }
 
     /**
-     * Change any of countrycode, techc and dnsset; what is not given stays.
+     * Change any of countrycode, entitytype, techc, dnsset, dnssec_algorithm and
+     * dnssec_digesttype; what is not given stays.
      *
      * @return array{ok: bool, settings?: array, error?: string, status?: int}
      */
@@ -105,6 +114,35 @@ final class ResellerSettings
                 return self::failure(400, 'countrycode must be a two-letter ISO 3166-1 code');
             }
             $fields['countrycode'] = $code === '' ? null : $code;
+        }
+
+        if (array_key_exists('entitytype', $params)) {
+            $type = $params['entitytype'];
+            if ($type === null || $type === '' || $type === 0 || $type === '0') {
+                $fields['entitytype'] = null;
+            } elseif (is_scalar($type) && preg_match('/^[1-7]$/', (string) $type) === 1) {
+                $fields['entitytype'] = (int) $type;
+            } else {
+                return self::failure(400, 'entitytype must be 1 to 7');
+            }
+        }
+
+        foreach ([
+            'dnssec_algorithm'  => self::DNSSEC_ALGORITHMS,
+            'dnssec_digesttype' => self::DNSSEC_DIGEST_TYPES,
+        ] as $key => $allowed) {
+            if ( ! array_key_exists($key, $params)) {
+                continue;
+            }
+            $value = $params[$key];
+            if ($value === null || $value === '' || $value === 0 || $value === '0') {
+                $fields[$key] = null;
+            } elseif (is_scalar($value) && ! is_bool($value) && preg_match('/^\d+$/', (string) $value) === 1
+                && in_array((int) $value, $allowed, true)) {
+                $fields[$key] = (int) $value;
+            } else {
+                return self::failure(400, "{$key} must be one of " . implode(', ', $allowed));
+            }
         }
 
         if (array_key_exists('techc', $params)) {

@@ -3,6 +3,7 @@
 namespace Eppitnic\Persistence;
 
 use Eppitnic\Support\PasswordPolicy;
+use Eppitnic\Support\Validate;
 use RedBeanPHP\R;
 
 /**
@@ -34,6 +35,27 @@ final class User
     }
 
     /**
+     * Every account needs its own address: it is where a password reset goes.
+     *
+     * @param int|null $exceptId the user being saved, who may keep their address
+     * @return string|null why $email cannot be saved, or null when it can
+     */
+    public static function emailError(mixed $email, ?int $exceptId = null): ?string {
+        if ( ! is_string($email) || trim($email) === '') {
+            return 'email is required';
+        }
+        $email = trim($email);
+        if ( ! Validate::isEmail($email) || mb_strlen($email) > Validate::USER_FIELD_MAX_LENGTHS['email']) {
+            return 'email must be a valid address of at most ' . Validate::USER_FIELD_MAX_LENGTHS['email'] . ' characters';
+        }
+        $taken = R::getCell('SELECT COUNT(*) FROM users WHERE LOWER(email) = LOWER(:email) AND id <> :id', [
+            ':email' => $email,
+            ':id'    => $exceptId ?? 0,
+        ]);
+        return (int) $taken > 0 ? 'this e-mail address is already used by another account' : null;
+    }
+
+    /**
      * @return string|null why $role cannot be given to a user of $resellerId,
      *                     or null when it can
      */
@@ -55,7 +77,8 @@ final class User
      * @param bool|null $notifyEnabled overrides that default
      * @throws UsernameTaken if $username is already in use
      * @throws \InvalidArgumentException if $password does not meet
-     *                       PasswordPolicy, or $role does not fit $resellerId
+     *                       PasswordPolicy, $role does not fit $resellerId, or
+     *                       $email is given and fails emailError()
      * @return int the new row's id
      */
     public static function create(
@@ -82,6 +105,10 @@ final class User
         // still check first: this is the guarantee, not the error message
         if ( ! PasswordPolicy::isAcceptable($password)) {
             throw new \InvalidArgumentException(PasswordPolicy::explain($password));
+        }
+
+        if ($email !== null && ($error = self::emailError($email)) !== null) {
+            throw new \InvalidArgumentException($error);
         }
 
         if (R::getCell('SELECT id FROM users WHERE username = ?', [$username]) !== null) {

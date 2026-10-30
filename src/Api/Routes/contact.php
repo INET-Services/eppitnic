@@ -114,12 +114,16 @@ $app->post('/v1/contacts', function (Request $request, Response $response, array
         return Json::response($response, ['error' => 'email is not a valid address'], 400);
     }
 
+    if (Contact::equalizeNameOrg((string) ($params['name'] ?? ''), (string) ($params['org'] ?? '')) === null) {
+        return Json::response($response, ['error' => Contact::NAME_ORG_RULE], 400);
+    }
+
     try {
         $result = EppSession::run(function ($nic) use ($params, $resellerId, $scope) {
             $contact = new Contact($nic);
             foreach ($params as $key => $value) {
-                if ($key === 'handle') {
-                    continue; // handled explicitly below
+                if ($key === 'handle' || $key === 'fax') {
+                    continue; // handle is set below; fax is accepted and ignored
                 }
                 if (in_array($key, Contact::FIELDS, true)) {
                     $contact->set($key, $value);
@@ -170,7 +174,7 @@ $app->patch('/v1/contacts/{handle}', function (Request $request, Response $respo
                 return ['ok' => false, 'status' => 404, 'error' => "Contact '{$handle}' not found"];
             }
             foreach ($params as $key => $value) {
-                if (in_array($key, Contact::FIELDS, true)) {
+                if ($key !== 'fax' && in_array($key, Contact::FIELDS, true)) {
                     $contact->set($key, $value);
                 }
             }

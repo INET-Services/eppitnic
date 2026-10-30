@@ -33,7 +33,11 @@ final class ContactUpdateCommand extends Command
             'registrant-of=' => 'act on the registrants of these domains instead, colon-separated',
         ];
         foreach (self::FIELDS as $field) {
-            $options[$field . '='] = "set {$field}";
+            $options[$field . '='] = match ($field) {
+                'fax'          => 'ignored: the registry no longer supports fax',
+                'name', 'org'  => "rejected: {$field} cannot be changed once the contact exists",
+                default        => "set {$field}",
+            };
         }
         $options['publish'] = 'consent to publishing in the public whois';
         $options['no-publish'] = 'withdraw that consent';
@@ -100,6 +104,9 @@ final class ContactUpdateCommand extends Command
                 }
 
                 foreach ($changes as $field) {
+                    if ($field === 'fax') {
+                        continue;
+                    }
                     $contact->set($field, (string) $this->option($field));
                 }
                 if ($publish || $unpublish) {
@@ -117,7 +124,10 @@ final class ContactUpdateCommand extends Command
                 }
 
                 if ($store && ! $dryRun) {
-                    $contact->updateDB($handle, Scope::operator($userId));
+                    if ( ! $contact->updateDB($handle, Scope::operator($userId))) {
+                        $this->failures++;
+                        $this->warn("{$handle}: updated at the registry, not stored (" . $contact->getError() . ')');
+                    }
                 }
 
                 $this->record("{$handle} updated", ['handle' => $handle, 'changed' => $changes]);

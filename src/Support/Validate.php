@@ -16,7 +16,8 @@ namespace Eppitnic\Support;
 final class Validate
 {
     /**
-     * contacts table column widths, config/mariadb-schema.sql
+     * contacts table column widths; mirrors config/mariadb-schema.sql, which a
+     * unit test enforces
      */
     public const CONTACT_FIELD_MAX_LENGTHS = [
         'handle'          => 32,
@@ -31,15 +32,24 @@ final class Validate
         'countrycode'     => 2,
         'voice'           => 64,
         'fax'             => 64,
-        'email'           => 64,
+        'email'           => 256,
         'authinfo'        => 64,
         'nationalitycode' => 2,
-        'regcode'         => 32,
+        'regcode'         => 36,
         'schoolcode'      => 32,
     ];
 
     /**
-     * domains table column widths, config/mariadb-schema.sql
+     * users table column widths; mirrors config/mariadb-schema.sql, which a
+     * unit test enforces
+     */
+    public const USER_FIELD_MAX_LENGTHS = [
+        'email' => 256,
+    ];
+
+    /**
+     * domains table column widths; mirrors config/mariadb-schema.sql, which a
+     * unit test enforces
      */
     public const DOMAIN_FIELD_MAX_LENGTHS = [
         'domain'     => 255,
@@ -79,7 +89,7 @@ final class Validate
      */
     public static function maxLength(array $params, array $maxLengths): ?string {
         foreach ($maxLengths as $field => $max) {
-            if (isset($params[$field]) && is_string($params[$field]) && strlen($params[$field]) > $max) {
+            if (isset($params[$field]) && is_string($params[$field]) && mb_strlen($params[$field]) > $max) {
                 return "{$field} exceeds the maximum length of {$max} characters";
             }
         }

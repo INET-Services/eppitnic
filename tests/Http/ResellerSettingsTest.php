@@ -6,6 +6,7 @@ use Eppitnic\Api\Middleware;
 use Eppitnic\Config;
 use Eppitnic\Service\ResellerSettings;
 use Eppitnic\Tests\Support\TestAccounts;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ResponseInterface;
 use RedBeanPHP\R;
@@ -13,7 +14,7 @@ use Slim\Factory\AppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 
 /**
- * A reseller's default country, default technical contacts and NS sets: who
+ * A reseller's default country, contact type, default technical contacts and NS sets: who
  * may touch them, what they must look like, and how the default set follows
  * the set it names.
  */
@@ -99,7 +100,8 @@ final class ResellerSettingsTest extends TestCase
 
         $this->assertSame(200, $response->getStatusCode());
         $this->assertSame(
-            ['countrycode' => '', 'techc' => [], 'dnsset' => '', 'nssets' => []],
+            ['countrycode' => '', 'entitytype' => null, 'techc' => [], 'dnsset' => '', 'nssets' => [],
+                'dnssec_algorithm' => null, 'dnssec_digesttype' => null],
             self::json($response)['settings'],
         );
     }
@@ -154,6 +156,90 @@ final class ResellerSettingsTest extends TestCase
         $this->call($app, 'PUT', '/v1/resellers/2/settings', ['countrycode' => '']);
 
         $this->assertNull(R::getCell('SELECT countrycode FROM resellers WHERE id = 2'));
+    }
+
+    public function testTheContactTypeIsStoredAndReturnedAsAnInteger(): void {
+        $app = $this->app();
+
+        $response = $this->call($app, 'PUT', '/v1/resellers/2/settings', ['entitytype' => '3']);
+
+        $this->assertSame(3, self::json($response)['settings']['entitytype']);
+        $this->assertSame(3, self::json($this->call($app, 'GET', '/v1/resellers/2/settings'))['settings']['entitytype']);
+    }
+
+    public function testNoContactTypeReadsAsNull(): void {
+        $settings = self::json($this->call($this->app(), 'GET', '/v1/resellers/2/settings'))['settings'];
+
+        $this->assertNull($settings['entitytype']);
+    }
+
+    #[DataProvider('clearingValues')]
+    public function testAnEmptyContactTypeClearsIt(mixed $value): void {
+        $app = $this->app();
+        $this->call($app, 'PUT', '/v1/resellers/2/settings', ['entitytype' => 2]);
+
+        $this->call($app, 'PUT', '/v1/resellers/2/settings', ['entitytype' => $value]);
+
+        $this->assertNull(R::getCell('SELECT entitytype FROM resellers WHERE id = 2'));
+    }
+
+    public static function clearingValues(): array {
+        return [[null], [''], [0], ['0']];
+    }
+
+    #[DataProvider('badContactTypes')]
+    public function testAContactTypeOutsideOneToSevenIsRefused(mixed $value): void {
+        $response = $this->call($this->app(), 'PUT', '/v1/resellers/2/settings', ['entitytype' => $value]);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertSame('entitytype must be 1 to 7', self::error($response));
+    }
+
+    public static function badContactTypes(): array {
+        return [[8], ['x'], [-1], ['2.5'], [[2]]];
+    }
+
+    public function testTheDnssecDefaultsAreStoredAndReturnedAsIntegers(): void {
+        $app = $this->app();
+
+        $response = $this->call($app, 'PUT', '/v1/resellers/2/settings', ['dnssec_algorithm' => '8', 'dnssec_digesttype' => 4]);
+
+        $settings = self::json($this->call($app, 'GET', '/v1/resellers/2/settings'))['settings'];
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame(8, $settings['dnssec_algorithm']);
+        $this->assertSame(4, $settings['dnssec_digesttype']);
+    }
+
+    #[DataProvider('clearingValues')]
+    public function testEmptyDnssecDefaultsClearThem(mixed $value): void {
+        $app = $this->app();
+        $this->call($app, 'PUT', '/v1/resellers/2/settings', ['dnssec_algorithm' => 13, 'dnssec_digesttype' => 2]);
+
+        $this->call($app, 'PUT', '/v1/resellers/2/settings', ['dnssec_algorithm' => $value, 'dnssec_digesttype' => $value]);
+
+        $this->assertNull(R::getCell('SELECT dnssec_algorithm FROM resellers WHERE id = 2'));
+        $this->assertNull(R::getCell('SELECT dnssec_digesttype FROM resellers WHERE id = 2'));
+    }
+
+    #[DataProvider('badDnssecDefaults')]
+    public function testADnssecDefaultOutsideTheRegistrysListIsRefused(string $key, mixed $value, string $message): void {
+        $response = $this->call($this->app(), 'PUT', '/v1/resellers/2/settings', [$key => $value]);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertSame($message, self::error($response));
+    }
+
+    public static function badDnssecDefaults(): array {
+        $algorithms = 'dnssec_algorithm must be one of 3, 5, 6, 7, 8, 10, 12, 13, 14';
+        $digests = 'dnssec_digesttype must be one of 1, 2, 3, 4';
+        return [
+            ['dnssec_algorithm', 9, $algorithms],
+            ['dnssec_algorithm', 15, $algorithms],
+            ['dnssec_algorithm', 'x', $algorithms],
+            ['dnssec_digesttype', 5, $digests],
+            ['dnssec_digesttype', 'x', $digests],
+            ['dnssec_digesttype', [2], $digests],
+        ];
     }
 
     public function testAMalformedCountryIsRefused(): void {

@@ -22,7 +22,7 @@ final class DomainInfoCommand extends Command
     public function options(): array {
         return self::fileOption('domain names') + [
             'authinfo=' => 'authinfo code, for a domain sponsored by another registrar',
-            'contacts=' => "also fetch linked contacts: all, registrant, admin or tech",
+            'contacts=' => "also fetch linked contacts: all or registrant",
             'store'     => 'write what was fetched to the local database',
         ];
     }
@@ -34,8 +34,8 @@ final class DomainInfoCommand extends Command
         }
 
         $contacts = (string) $this->option('contacts', '');
-        if ($contacts !== '' && ! in_array($contacts, ['all', 'registrant', 'admin', 'tech'], true)) {
-            throw new UsageError("--contacts must be one of: all, registrant, admin, tech");
+        if ($contacts !== '' && ! in_array($contacts, ['all', 'registrant'], true)) {
+            throw new UsageError("--contacts must be one of: all, registrant");
         }
 
         $authinfo = (string) $this->option('authinfo', '');
@@ -92,7 +92,9 @@ final class DomainInfoCommand extends Command
     private function render(array $d): string {
         $out = $d['domain'] . "\n";
         $out .= sprintf("  %-12s %s\n", 'registrant', $d['registrant']);
-        $out .= sprintf("  %-12s %s\n", 'admin', $d['admin'] !== '' ? $d['admin'] : '-');
+        if ($d['admin'] !== '') {
+            $out .= sprintf("  %-12s %s\n", 'admin', $d['admin']);
+        }
         foreach ($d['tech'] as $tech) {
             $out .= sprintf("  %-12s %s\n", 'tech', $tech);
         }

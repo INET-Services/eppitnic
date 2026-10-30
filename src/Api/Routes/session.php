@@ -343,3 +343,30 @@ $app->post('/v1/session/change-password', function (Request $request, Response $
 
     return Json::response($response, ['changed' => true]);
 });
+
+$app->post('/v1/session/adopt-password', function (Request $request, Response $response, array $args): Response {
+    $userId = Auth::requireAdmin($request);
+    $params = $request->getParsedBody() ?? [];
+
+    $password = (string) ($params['password'] ?? '');
+    if ($password === '') {
+        return Json::response($response, ['error' => 'password is required'], 400);
+    }
+    if ($error = Validate::eppField('password', $password)) {
+        return Json::response($response, ['error' => $error], 400);
+    }
+
+    // verified by a login with it; stored only when the registry accepts
+    $outcome = RegistryPasswordChange::adopt($password, $userId);
+
+    if ( ! $outcome['ok']) {
+        return Json::response($response, ['error' => $outcome['error']],
+            $outcome['stage'] === 'credentials' ? 400 : 502);
+    }
+
+    $body = ['adopted' => true];
+    if (isset($outcome['warning'])) {
+        $body['warning'] = $outcome['warning'];
+    }
+    return Json::response($response, $body);
+});

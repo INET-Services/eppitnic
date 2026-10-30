@@ -296,7 +296,7 @@ final class LoginRequirementsTest extends TestCase
         $manager = TestAccounts::issueToken(['id' => 2, 'role' => 'manager', 'reseller_id' => 2, 'has_totp' => false, 'max_token_age' => 60])['token'];
 
         $created = $this->call($app, 'POST', '/v1/users', [
-            'username' => 'fresh-user', 'password' => self::FRESH, 'must_change_password' => 1,
+            'username' => 'fresh-user', 'email' => 'fresh@example.test', 'password' => self::FRESH, 'must_change_password' => 1,
         ], $manager);
         $row = self::json($created)['users'][0];
         $this->assertSame(201, $created->getStatusCode());

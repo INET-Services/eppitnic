@@ -211,9 +211,9 @@ class Contact extends AbstractObject
   }
 
   /**
-   * set the entity type which may be one of
+   * set the entity type which may be one of the following; anything else
+   * leaves it at 0, which create() refuses
    *
-   * 0 - NON REGISTRANT CONTACT (admin-c/tech-c)
    * 1 - persone fisiche italiane e straniere
    * 2 - società
    * 3 - imprese individuali, liberi professionisti / ordini professionali
@@ -321,12 +321,43 @@ class Contact extends AbstractObject
     throw new \RuntimeException("Unable to generate a unique contact handle after {$maxAttempts} attempts");
   }
 
+  public const NAME_ORG_RULE = 'name and org must be the same';
+  public const NAME_ORG_FIXED = 'name and org cannot be changed once the contact exists';
+
+  /**
+   * The registry wants org equal to name: whichever is missing is copied from
+   * the other.
+   *
+   * @return array{0: string, 1: string}|null name and org; null when both are
+   *         set and differ
+   */
+  public static function equalizeNameOrg(string $name, string $org): ?array {
+    if ($org === '') {
+      return array($name, $name);
+    }
+    if ($name === '') {
+      return array($org, $org);
+    }
+    return $name === $org ? array($name, $org) : null;
+  }
+
   /**
    * create contact
    *
    * @return bool status
    */
   public function create(): bool {
+    if ($this->entitytype < 1 || $this->entitytype > 7) {
+      $this->setError("entitytype must be 1 to 7: every contact is a registrant.");
+      return FALSE;
+    }
+    $pair = self::equalizeNameOrg((string)$this->name, (string)$this->org);
+    if ($pair === null) {
+      $this->setError(self::NAME_ORG_RULE);
+      return FALSE;
+    }
+    [$this->name, $this->org] = $pair;
+
     $this->xmlQuery = XmlBuilder::contactCreate($this->client->set_clTRID(), [
       'id'                   => $this->handle,
       'name'                 => $this->name,
@@ -337,7 +368,6 @@ class Contact extends AbstractObject
       'pc'                   => $this->postalcode,
       'cc'                   => $this->countrycode,
       'voice'                => $this->voice,
-      'fax'                  => $this->fax,
       'email'                => $this->email,
       'authinfo'             => $this->authinfo,
       'consentForPublishing' => $this->consentforpublishing,
@@ -461,13 +491,9 @@ class Contact extends AbstractObject
       return FALSE;
     }
 
-    // postalinfo
-    $postalinfo = array();
-    if ($this->changed('name')) {
-      $postalinfo[] = array('name' => 'name', 'value' => $this->name);
-    }
-    if ($this->changed('org')) {
-      $postalinfo[] = array('name' => 'org', 'value' => $this->org);
+    if ($this->changed('name') || $this->changed('org')) {
+      $this->setError(self::NAME_ORG_FIXED);
+      return FALSE;
     }
 
     // address
@@ -484,12 +510,9 @@ class Contact extends AbstractObject
       $addr[] = array('name' => 'cc', 'value' => $this->countrycode);
     }
 
-    // Only changed fields, which is the whole point: an empty <contact:fax/>
-    // means "remove the fax number", so "set to empty" must stay distinct from
-    // "never mentioned" -- listing all of them wiped a fax on an email change
+    // only the changed fields; fax is no longer sent
     $contact = array();
     if ($this->changed('voice')) $contact[] = array('name' => 'voice',  'value' => $this->voice);
-    if ($this->changed('fax'))   $contact[] = array('name' => 'fax',    'value' => $this->fax);
     if ($this->changed('email')) $contact[] = array('name' => 'email',  'value' => $this->email);
 
     // registrant information
@@ -507,10 +530,15 @@ class Contact extends AbstractObject
       $registrant['schoolCode'] = $this->schoolcode;
     }
 
+    // a fax-only change leaves nothing to send
+    if ($addr === array() && $contact === array() && $registrant === array()
+        && ! $this->changed('authinfo') && ! $this->changed('consentforpublishing')) {
+      return TRUE;
+    }
+
     $this->xmlQuery = XmlBuilder::contactUpdate(
       $this->client->set_clTRID(),
       $this->handle,
-      $postalinfo,
       $addr,
       $contact,
       $this->changed('authinfo') ? $this->authinfo : '',
@@ -725,7 +753,7 @@ class Contact extends AbstractObject
   public function duplicate(Client $nic, int $resellerId, int $actorId): string|false {
     $fields = [
       'name', 'org', 'street', 'street2', 'street3', 'city', 'province',
-      'postalcode', 'countrycode', 'voice', 'fax', 'email',
+      'postalcode', 'countrycode', 'voice', 'email',
       'nationalitycode', 'entitytype', 'regcode', 'schoolcode',
     ];
 
@@ -742,10 +770,19 @@ class Contact extends AbstractObject
     }
     $new->set('authinfo', $new->authinfo());
 
+    // the registry wants name == org: the legal name (org) wins, name only
+    // fills in when org is empty
+    $new->name = $new->org = ((string)$new->org !== '') ? $new->org : $new->name;
+
     if ( ! $new->create()) {
       return false;
     }
-    $new->storeDB($resellerId, $actorId);
+    if ( ! $new->storeDB($resellerId, $actorId)) {
+      $this->setError(
+        "created at the registry as {$new->get('handle')}, not stored locally: " . $new->getError()
+      );
+      return false;
+    }
     return $new->get('handle');
   }
 }

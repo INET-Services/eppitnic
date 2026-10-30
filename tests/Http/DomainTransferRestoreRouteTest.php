@@ -150,7 +150,7 @@ final class DomainTransferRestoreRouteTest extends EppTestCase
         $this->assertSame('pending', $row['status']);
         $this->assertSame('MINE1234MINE5678', $row['registrant']);
         $this->assertSame(2, (int) $row['reseller_id']);
-        $this->assertSame(['TECH1234TECH5678'], unserialize($row['techc']));
+        $this->assertSame([], unserialize($row['techc']), 'tech contacts are ignored');
     }
 
     public function testTheTransfersListShowsTheStatus(): void {

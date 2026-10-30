@@ -16,7 +16,7 @@ use RedBeanPHP\R;
  *
  * This is deliberately its own class rather than living inside
  * Session: everything it does operates on Domain objects
- * (loadDB/fetch/addNS/remNS/addTECH/remTECH/update/storeDB/deleteDomainDB),
+ * (loadDB/fetch/addNS/remNS/update/storeDB/deleteDomainDB),
  * so folding it into Session would give Session a dependency on Domain that
  * nothing else in the protocol layer has (Domain depends on Contact, nothing
  * depends on Session).
@@ -181,17 +181,15 @@ class PollProcessor
 
     // 3. INCOMING TRANSFERS -- reconcile every open local transfer request
     $transfers = R::getAll("
-      SELECT t.id, t.reseller_id, t.domain, t.techc, t.dns, t.attempts, t.attempted_at
+      SELECT t.id, t.reseller_id, t.domain, t.dns, t.attempts, t.attempted_at
       FROM transfers t, contacts c
       WHERE t.registrant = c.handle AND t.status = 'pending'");
 
     foreach ($transfers as $transfer) {
       $log[] = "verifying '{$transfer['domain']}' (transfer-in)";
 
-      // techc/dns are stored serialize()d, so casting with (array) instead
-      // would push the blob itself to the registry as a handle. '?: []' guards
-      // a corrupt column, unserialize() returning false where nobody is looking
-      $techc = empty($transfer['techc']) ? [] : (unserialize($transfer['techc']) ?: []);
+      // dns is stored serialize()d, so casting with (array) instead would push
+      // the blob itself to the registry. '?: []' guards a corrupt column
       $dns   = empty($transfer['dns'])   ? [] : (unserialize($transfer['dns'])   ?: []);
 
       $archiveMsg = false;
@@ -230,17 +228,6 @@ class PollProcessor
             break;
           }
 
-          // reconcile tech contacts to the set requested at transfer time
-          $tech = [];
-          $currentTech = (array) $this->domain->get('tech');
-          foreach ($techc as $newTech) {
-            $tech[$newTech] = $newTech;
-            $this->domain->addTECH($newTech);
-          }
-          foreach ($currentTech as $existing) {
-            if ( ! in_array($existing, $tech)) $this->domain->remTECH($existing);
-          }
-
           // reconcile nameservers to the set requested at transfer time (dns
           // rows are [{name, ip}, ...], matching the shape used elsewhere in
           // this codebase)
@@ -266,7 +253,7 @@ class PollProcessor
 
           if ($this->domain->hasChanges() && ! $this->domain->update()) {
             $error = $this->domain->getError();
-            $log[] = "  couldn't apply the requested contacts/nameservers: " . $error;
+            $log[] = "  couldn't apply the requested nameservers: " . $error;
             if ($zone !== null) PowerDnsZones::undo($transfer['domain'], $zone, []);
 
             // what the registry has stays what we store, until an update lands
@@ -285,7 +272,7 @@ class PollProcessor
             Notifier::notifyTransferUpdateFailed(
               $transfer['domain'],
               (int) $transfer['reseller_id'],
-              $this->updateFailedBody($transfer['domain'], $error, $techc, $dns, $fetched)
+              $this->updateFailedBody($transfer['domain'], $error, $dns, $fetched)
             );
             if ($archiveMsg !== false) {
               R::exec("UPDATE messages SET archived_time = NOW() WHERE id = ?", [$archiveMsg]);
@@ -344,7 +331,7 @@ class PollProcessor
    *
    * @param bool $fetched whether $this->domain holds the registry's data
    */
-  private function updateFailedBody(string $domain, string $error, array $techc, array $dns, bool $fetched): string {
+  private function updateFailedBody(string $domain, string $error, array $dns, bool $fetched): string {
     $requested = array_map(static function ($ns): string {
       $ips = is_array($ns) ? (array) ($ns['ip'] ?? []) : [];
       $name = is_array($ns) ? ($ns['name'] ?? '') : $ns;
@@ -363,7 +350,6 @@ class PollProcessor
       . " its nameservers " . self::MAX_UPDATE_ATTEMPTS . " times.\n\n"
       . "Registry error: {$error}\n\n"
       . "Requested nameservers: " . (implode(', ', $requested) ?: 'none') . "\n"
-      . "Requested tech contacts: " . (implode(', ', $techc) ?: 'none') . "\n"
       . "Nameservers at the registry: {$current}\n\n"
       . "The update must now be done by hand.\n";
   }

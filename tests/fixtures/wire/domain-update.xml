@@ -11,8 +11,6 @@
               <domain:hostAddr ip="v4">192.0.2.1</domain:hostAddr>
             </domain:hostAttr>
           </domain:ns>
-          <domain:contact type="admin">ADMIN123ADMIN456</domain:contact>
-          <domain:contact type="tech">TECH1234TECH5678</domain:contact>
         </domain:add>
         <domain:chg>
           <domain:authInfo>

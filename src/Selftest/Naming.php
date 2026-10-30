@@ -42,7 +42,7 @@ final class Naming
 
     /**
      * @param string $role one letter saying what the contact is for: R
-     *                     registrant, A admin, T tech, D disposable
+     *                     registrant, D disposable
      * @param int $index distinguishes two contacts in the same role
      * @return string a contact handle, e.g. 'STTLJD1SR1'
      */

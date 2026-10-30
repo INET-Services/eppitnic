@@ -127,7 +127,7 @@ To do by hand what `eppitnic setup` does:
 3. Create the first admin:
 
    ```bash
-   bin/eppitnic user create <ADMIN_USERNAME> --password='<ADMIN_PASSWORD>' --role=admin
+   bin/eppitnic user create <ADMIN_USERNAME> --password='<ADMIN_PASSWORD>' --email=<ADMIN_EMAIL> --role=admin
    ```
 
 4. Set the registrar tag and the EPP account (see "Change the EPP account
@@ -174,7 +174,7 @@ changes through `GET`/`PUT /v1/allowed-origins` or the frontend's Settings.
 Clients without an `Origin` header (curl, scripts) are not affected — see
 "CORS" in [API.md](API.md).
 
-The schema is versioned: `settings.schema_version` (`MMmmrr`, e.g. `070000`)
+The schema is versioned: `settings.schema_version` (`MMmmrr`, e.g. `070100`)
 is compared with `SCHEMA_VERSION` in `config/constants.php` on every
 initialization, and the `config/mariadb-schema-upgrade-{from}-to-{to}.sql`
 files are applied in sequence. One process per database migrates at a
@@ -254,6 +254,11 @@ through the registry.
 bin/eppitnic config epp-password <NEW_PASSWORD>             # changes it at the registry, then stores it
 bin/eppitnic config epp-password --force <LIVE_PASSWORD>    # verifies it with a login, then adopts it as-is
 ```
+
+Give the password as `<NEW_PASSWORD>`, or keep it out of the process list
+with `--password-stdin` (one line; add `--yes`, as there is no terminal to
+confirm at). With neither, a terminal is asked for it twice, hidden. Nothing
+is generated.
 
 Both take 6 to 16 characters (EPP `pwType`) and are verified with a real
 login before anything is written, so a refused password changes nothing
@@ -345,12 +350,28 @@ bin/eppitnic reseller create 'Example Reseller' --max-operations=20
 bin/eppitnic reseller list
 bin/eppitnic reseller set 2 max_operations 50
 bin/eppitnic reseller set 2 active false       # its users lose access at once
-bin/eppitnic user create admin2 --password='<PASSWORD>' --role=admin
-bin/eppitnic user create jdoe --password='<PASSWORD>' --role=manager --reseller=2
+bin/eppitnic user create admin2 --password='<PASSWORD>' --email=admin2@example.it --role=admin
+bin/eppitnic user create jdoe --password='<PASSWORD>' --email=jdoe@example.it --role=manager --reseller=2
 ```
 
 Passwords need at least 12 characters with a lower-case letter, an upper-case
 letter, a digit and one other character.
+
+Reset a password or enable and disable accounts. The same rules as the API
+apply, as `--user` (default 1): a manager reaches only non-admin users of their
+reseller, and the last active admin or manager of an active reseller stays.
+
+```bash
+bin/eppitnic user password jdoe --generate               # prints it once
+echo "$NEW" | bin/eppitnic user password jdoe --password-stdin --must-change-password
+bin/eppitnic user password jdoe                          # asks twice, no echo
+bin/eppitnic user deactivate jdoe mroe                   # already inactive is a no-op
+bin/eppitnic user activate jdoe
+```
+
+`user password` takes one of `--password=VALUE`, `--password-stdin` or
+`--generate`, or prompts at a terminal. It keeps existing sessions and API
+tokens valid; `--must-change-password` forces a change at next login.
 
 Issue a fixed API token for scripted access:
 
@@ -380,6 +401,28 @@ changes nothing. Exit code `0` means coherent, `6` means mismatches were found
 fix them. Move a mismatched domain with
 `bin/eppitnic domain set-owner --new-reseller=<RESELLER_ID> <DOMAIN>`, which
 copies its contacts into that reseller.
+
+## Remove unused contacts
+
+The registry has no administrative or technical contacts any more, but older
+domains still carry them locally. `contact cleanup` clears `admin` and `tech`
+on the domains, then deletes at the registry every active contact that no
+active domain or pending transfer has as registrant, and deactivates it
+locally. That includes registrants nothing uses.
+
+```bash
+bin/eppitnic contact cleanup --dry-run   # domains touched, contacts to delete
+bin/eppitnic contact cleanup             # asks first; --yes skips the prompt
+```
+
+Per contact it reports `deleted`, `already gone at the registry` (deactivated
+locally too) or `still linked at the registry, kept` (for example a domain in
+redemption). Only other registry errors count as failures and give exit code
+`33`.
+
+It is a sysop tool: it always covers every reseller's domains and contacts and
+ignores `--user`. A run that changed anything writes one `history` row (object
+`domains`, id 0, no user) with the counts.
 
 ## Scheduled jobs
 
@@ -505,8 +548,8 @@ success and failure alike: the system recipient's copy covers the whole run,
 and each reseller's users (under `user` or `both`) get a copy covering only
 that reseller's domains.
 
-When a transfer-in completes, `poll process` applies the requested tech
-contacts and nameservers at once. If the registry refuses, it stores the
+When a transfer-in completes, `poll process` applies the requested
+nameservers at once. If the registry refuses, it stores the
 domain as the registry has it and tries again on a later run, at least 20
 minutes after the previous attempt, up to 3 more times. After the fourth
 refusal it sends one `transfer_update_failed` email, with the registry's
@@ -582,10 +625,9 @@ On a manual run, `--batch-size=<N>` overrides `batch_size` for that run only,
 and `--report-only` queries the registry as normal but writes nothing and
 leaves the cursor where it is.
 
-Every registrant, admin and technical contact linked to a processed domain is
-refreshed locally with `contact info`. This keeps `domains.admin` and
-`domains.tech` backed by local contacts even though, unlike `registrant`,
-neither has a foreign key to `contacts.handle`.
+Every contact linked to a processed domain is refreshed locally with
+`contact info`. The registry returns a registrant only, so `domains.admin`
+and `domains.tech` are emptied when it reports none.
 
 A domain the registry no longer holds is reported but never deactivated
 automatically: this job reconciles data, it does not prune it. The exit code

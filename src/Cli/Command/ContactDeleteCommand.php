@@ -5,6 +5,7 @@ namespace Eppitnic\Cli\Command;
 use Eppitnic\Cli\Command;
 use Eppitnic\Cli\UsageError;
 use Eppitnic\Epp\Contact;
+use Eppitnic\Service\ContactRemoval;
 use RedBeanPHP\R;
 
 /**
@@ -62,15 +63,10 @@ final class ContactDeleteCommand extends Command
             $contact = new Contact($nic);
 
             foreach ($handles as $handle) {
-                if ( ! $contact->delete($handle)) {
+                $outcome = ContactRemoval::delete($contact, $handle, ! $dryRun);
+                if ($outcome !== ContactRemoval::DELETED) {
                     $this->itemFailed($handle, $contact->getError());
                     continue;
-                }
-
-                if ( ! $dryRun) {
-                    // deactivated rather than removed: domains.registrant is a
-                    // foreign key onto contacts.handle, so the row has to stay
-                    R::exec("UPDATE contacts SET active = 0 WHERE handle = ?", [$handle]);
                 }
 
                 $this->record("{$handle} deleted", ['handle' => $handle, 'deleted' => true]);

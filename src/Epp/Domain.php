@@ -498,8 +498,6 @@ class Domain extends AbstractObject
       $this->domain,
       $this->ns,
       $this->registrant,
-      $this->admin,
-      $this->tech,
       $this->authinfo,
       $this->dnssec
     );
@@ -521,7 +519,7 @@ class Domain extends AbstractObject
    * @param string $authinfo authinfo string (domain sponsored by other
    *               registrar)
    * @param string $infContacts restrict linked-contact info to this type
-   *               ('all', 'registrant', 'admin', 'tech', or blank for none)
+   *               ('all', 'registrant', or blank for none)
    * @return bool status
    */
   public function fetch(?string $domain = null, ?string $authinfo = null, string $infContacts = ''): bool {
@@ -535,7 +533,7 @@ class Domain extends AbstractObject
     }
 
     $infContacts = strtolower($infContacts);
-    if ( ! in_array($infContacts, array("all", "registrant", "admin", "tech"))) {
+    if ( ! in_array($infContacts, array("all", "registrant"))) {
       $infContacts = '';
     }
 
@@ -722,18 +720,6 @@ class Domain extends AbstractObject
       }
     }
 
-    if ($this->changed('admin')) {
-      $add['admin'] = $this->admin;
-      $remove['admin'] = $this->admin_initial;
-    }
-
-    if ($this->changed('tech')) {
-      // at most six technical contacts, as with the nameservers
-      $this->tech = array_slice($this->tech, 0, 6);
-      $add['tech'] = array_diff($this->tech, $this->tech_initial);
-      $remove['tech'] = array_diff($this->tech_initial, $this->tech);
-    }
-
     $dnssecAdd = array();
     $dnssecRemove = array();
     if ($this->changed('dnssec')) {
@@ -743,12 +729,21 @@ class Domain extends AbstractObject
       $dnssecRemove = array_diff_key($this->dnssec_initial, $this->dnssec);
     }
 
+    $authinfo = $this->changed('authinfo') ? $this->authinfo : '';
+
+    // admin/tech changes are never sent: with nothing else left, no update
+    if ($add === array() && $remove === array() && $authinfo === ''
+        && $dnssecAdd === array() && $dnssecRemove === array()) {
+      $this->resetChangeTracking();
+      return TRUE;
+    }
+
     $this->xmlQuery = XmlBuilder::domainUpdate(
       $this->client->set_clTRID(),
       $this->domain,
       $add,
       $remove,
-      array('authinfo' => $this->changed('authinfo') ? $this->authinfo : ''),
+      array('authinfo' => $authinfo),
       $dnssecAdd,
       $dnssecRemove
     );
@@ -777,21 +772,13 @@ class Domain extends AbstractObject
       return FALSE;
     }
 
-    // updateRegistrant() carries only the registrant, its authinfo and the
-    // admin contact; nameserver and technical-contact changes are ignored by
-    // the registry on this command and belong to update()
-    $add = array();
-    $remove = array();
-    if ($this->changed('admin')) {
-      $add['admin'] = $this->admin;
-      $remove['admin'] = $this->admin_initial;
-    }
-
+    // carries only the registrant and its authinfo; nameserver changes
+    // belong to update()
     $this->xmlQuery = XmlBuilder::domainUpdate(
       $this->client->set_clTRID(),
       $this->domain,
-      $add,
-      $remove,
+      array(),
+      array(),
       array('registrant' => $this->registrant, 'authinfo' => $this->authinfo)
     );
 
@@ -1153,7 +1140,7 @@ class Domain extends AbstractObject
       $row['status'] = [];
       return $row;
     }, R::getAll("
-      SELECT concat(domain, CASE WHEN status = 'cancelled' THEN ' (transfer-in cancelled)' ELSE ' (transfer-in)' END) as domain, registrant, reseller_id,
+      SELECT concat(domain, CASE WHEN status = 'cancelled' THEN ' (transfer-in cancelled)' ELSE ' (transfer-in)' END) as domain, registrant, reseller_id, NULL AS ex_date,
         (SELECT r.name FROM resellers r WHERE r.id = transfers.reseller_id) AS reseller_name
       FROM transfers WHERE " . implode(' AND ', $where) . "
         AND NOT EXISTS (SELECT 1 FROM domains d WHERE d.domain = transfers.domain AND d.active = 1)
@@ -1169,7 +1156,7 @@ class Domain extends AbstractObject
     }
 
     $active = R::getAll("
-      SELECT domain, registrant, reseller_id, status,
+      SELECT domain, registrant, reseller_id, ex_date, status,
         (SELECT r.name FROM resellers r WHERE r.id = domains.reseller_id) AS reseller_name
       FROM domains WHERE " . implode(' AND ', $where) . "
       ORDER BY domain ASC", $params);

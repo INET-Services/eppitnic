@@ -245,6 +245,18 @@ abstract class Command
         return new Scope($this->userId(), $resellerId ?: 1, 'user');
     }
 
+    /**
+     * The acting user (--user) with their real role, so the API's rules about
+     * who may reach whom apply unchanged.
+     */
+    protected function actor(): Scope {
+        $row = \RedBeanPHP\R::getRow('SELECT id, reseller_id, role FROM users WHERE id = ?', [$this->userId()]);
+        if (empty($row)) {
+            throw new UsageError("no user with id {$this->userId()} to act as (--user)");
+        }
+        return new Scope((int) $row['id'], (int) $row['reseller_id'], (string) $row['role']);
+    }
+
     protected function isDryRun(): bool {
         return $this->hasOption('dry-run');
     }
@@ -310,6 +322,31 @@ abstract class Command
         }
         fwrite(STDOUT, "\n");
         return $line;
+    }
+
+    /** where readPasswordStdin() reads from; swapped by the test suite */
+    private $input = null;
+
+    public function useInputStream($stream): void {
+        $this->input = $stream;
+    }
+
+    /** One line from stdin for --password-stdin, minus the line break. */
+    protected function readPasswordStdin(): string {
+        $line = fgets($this->input ?? STDIN);
+        if ($line === false || rtrim($line, "\r\n") === '') {
+            throw new UsageError('--password-stdin: no password on stdin');
+        }
+        return rtrim($line, "\r\n");
+    }
+
+    /** Asked twice, hidden; the answers must match. */
+    protected function promptNewPassword(string $label = 'New password'): string {
+        $password = $this->promptHidden($label);
+        if ($password !== $this->promptHidden('Repeat the password')) {
+            throw new UsageError('the passwords do not match');
+        }
+        return $password;
     }
 
     /**

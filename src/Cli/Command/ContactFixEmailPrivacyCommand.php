@@ -88,7 +88,10 @@ final class ContactFixEmailPrivacyCommand extends Command
                     $this->itemFailed($handle, $contact->getError());
                     continue;
                 }
-                $contact->updateDB($handle, Scope::operator($scope->userId));
+                if ( ! $contact->updateDB($handle, Scope::operator($scope->userId))) {
+                    $this->failures++;
+                    $this->warn("{$handle}: updated at the registry, not stored (" . $contact->getError() . ')');
+                }
 
                 $this->record(
                     sprintf('%-24s unpublished%s', $handle,

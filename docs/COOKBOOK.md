@@ -90,14 +90,13 @@ if ($domain->fetch('example.it')) {
     echo $domain->get('registrant'), "\n";
     echo implode(', ', $domain->get('status')), "\n";
 
-    // both always arrays, keyed by handle and by hostname
-    echo implode(', ', array_keys($domain->get('tech'))), "\n";
+    // an array, keyed by hostname
     echo implode(', ', array_keys($domain->get('ns'))), "\n";
 }
 ```
 
 A domain sponsored by another registrar needs its authinfo, and can return
-the linked contacts in the same round trip:
+the linked contacts in the same round trip (`'all'` or `'registrant'`):
 
 ```php
 $domain->fetch('example.it', '<AUTHINFO>', 'all');
@@ -114,7 +113,6 @@ $contact = new Contact($nic);
 $contact->set('handle', $contact->generateHandle());   // random, checked free
 
 $contact->set('name', 'Mario Rossi');
-$contact->set('org', 'Rossi S.r.l.');
 $contact->set('street', 'Via Roma 1');
 $contact->set('city', 'Bolzano');
 $contact->set('province', 'BZ');
@@ -125,7 +123,7 @@ $contact->set('email', 'mario.rossi@example.it');
 
 // an authinfo is generated for you; set one explicitly to choose it
 
-// a registrant also needs these; an admin/tech contact is entitytype 0
+// every contact is a registrant, so all three are required
 $contact->set('nationalitycode', 'IT');
 $contact->set('entitytype', 2);
 $contact->set('regcode', '01234567897');   // a partita IVA; the checksum is verified
@@ -144,8 +142,13 @@ person) and entity type 3 (a freelancer) may withhold it; every other
 registrant is published in the public whois by law. Without `setConsent()`
 the contact above is refused with EPP code `2308` and extended reason `8028`,
 *"consentForPublishing cannot be set to false if entity type != 1 and entity
-type != 3"*. An admin or technical contact is entity type 0, carries no
-registrant block, and is unaffected.
+type != 3"*.
+
+Every contact is a registrant: entity type 1 to 7 is required, and `create()`
+refuses anything else before the registry is asked. `name` and `org` must be
+the same: set either one and the other is copied from it; setting both to
+different values fails with *"name and org must be the same"*. Neither can be
+changed afterwards, and `update()` refuses an attempt. There is no fax number.
 
 The registration code is checked, not merely required. For entity type 2 it
 is a partita IVA, and the registry verifies its check digit: the last of the
@@ -166,8 +169,6 @@ use Eppitnic\Service\DomainService;
 $result = DomainService::createOrTransfer($nic, [
     'domain'     => 'example.it',
     'registrant' => '<REGISTRANT_HANDLE>',
-    'admin'      => '<ADMIN_HANDLE>',
-    'tech'       => ['<TECH_HANDLE>'],
     'ns'         => ['ns1.example.it', 'ns2.example.it'],
 ], $userId);
 
@@ -180,10 +181,13 @@ if ( ! $result['ok']) {
 A registration is stored locally as a domain of the registrant's reseller. A
 requested transfer is stored as a pending row in `transfers`, as `POST
 /v1/domains/{name}/transfer` does, and becomes a domain once `eppitnic poll
-process` sees it complete: it applies the requested tech contacts and
-nameservers, retrying a refused update up to 3 times, 20 minutes apart, and
-then emails a `transfer_update_failed` notice. The registrant must be a stored
-contact.
+process` sees it complete: it applies the requested nameservers, retrying a
+refused update up to 3 times, 20 minutes apart, and then emails a
+`transfer_update_failed` notice. The registrant must be a stored contact.
+
+A domain has a registrant and nameservers, nothing else: the registry has no
+administrative or technical contacts. `admin` and `tech` keys are accepted and
+ignored, and nothing about them is sent.
 
 The object API underneath, to use the pieces separately:
 
@@ -191,8 +195,6 @@ The object API underneath, to use the pieces separately:
 $domain = new Domain($nic);
 $domain->set('domain', 'example.it');
 $domain->set('registrant', '<REGISTRANT_HANDLE>');
-$domain->set('admin', '<ADMIN_HANDLE>');
-$domain->addTECH('<TECH_HANDLE>');
 $domain->addNS('ns1.example.it');
 $domain->addNS('ns2.example.it', ['192.0.2.1']);   // glue, when below the domain
 $domain->set('authinfo', $domain->authinfo());     // 16 random characters, mixed classes
@@ -216,8 +218,6 @@ $domain->fetch('example.it');
 
 $domain->addNS('ns3.example.it');
 $domain->remNS('ns1.example.it');
-$domain->addTECH('<OTHER_TECH_HANDLE>');
-$domain->set('admin', '<NEW_ADMIN_HANDLE>');
 
 // capture this before update(), which clears it on success
 $changes = $domain->changedFields();

@@ -7,6 +7,7 @@ use Eppitnic\Cli\UsageError;
 use Eppitnic\Config;
 use Eppitnic\Epp\Client;
 use Eppitnic\Service\RegistryPasswordChange;
+use Eppitnic\Service\SessionState;
 use Eppitnic\Tests\Support\CommandCatalog;
 use Eppitnic\Tests\Support\EppTestCase;
 use Eppitnic\Tests\Support\FakeTransport;
@@ -24,6 +25,8 @@ final class ConfigEppPasswordCommandTest extends EppTestCase
 
     /** whether the registry accepts whatever password it is offered */
     private bool $registryAccepts = true;
+
+    private ?string $refusal = null;
 
     protected function setUp(): void {
         parent::setUp();
@@ -55,7 +58,7 @@ final class ConfigEppPasswordCommandTest extends EppTestCase
             $transport->queue(CommandCatalog::GREETING_RESPONSE);
             $transport->queueCallback(function (string $request): string {
                 $this->attempted[] = self::credentialIn($request);
-                return $this->registryAccepts ? CommandCatalog::OK_RESPONSE : self::loginRefused();
+                return $this->registryAccepts ? CommandCatalog::OK_RESPONSE : ($this->refusal ?? self::loginRefused());
             });
             $transport->queue(CommandCatalog::OK_RESPONSE);
 
@@ -107,14 +110,48 @@ final class ConfigEppPasswordCommandTest extends EppTestCase
 
     public function testForceRefusesAndChangesNothingWhenTheRegistryDisagrees(): void {
         $this->registryAccepts = false;
+        $this->refusal = CommandCatalog::loginRefusal('2200', 'Authentication error', '6005', 'Invalid username or password');
 
-        $command = new ConfigEppPasswordCommand(['--yes', '--force', 'not-real']);
-        $command->useErrorStream(fopen('php://memory', 'w+'));
-
-        $exit = $command->run();
+        [$exit, $stderr] = $this->forceWithStderr('not-real');
 
         $this->assertSame(CHANGE_PASSWORD_FAILED, $exit);
+        $this->assertStringContainsString('the registry rejected this password (2200 / 6005: Invalid username or password)', $stderr);
         $this->assertSame('old-password', Config::get('epp')['password']);
+    }
+
+    public function testForceSaysWhenTheLoginWasRefusedForAnotherReason(): void {
+        $this->registryAccepts = false;
+        $this->refusal = CommandCatalog::loginRefusal('2400', 'Command failed', '5052', 'User IP address is not allowed');
+
+        [$exit, $stderr] = $this->forceWithStderr('maybe-fine');
+
+        $this->assertSame(CHANGE_PASSWORD_FAILED, $exit);
+        $this->assertStringContainsString('a reason other than the password', $stderr);
+        $this->assertStringContainsString('(2400 / 5052: User IP address is not allowed)', $stderr);
+        $this->assertSame('old-password', Config::get('epp')['password']);
+    }
+
+    public function testForceClearsTheSharedSession(): void {
+        Config::set('session_cookies', ['JSESSIONID' => 'old']);
+        Config::set('session_timestamp', time());
+
+        $this->forceWithStderr('already-live');
+
+        $this->assertSame(0, SessionState::timestamp());
+        $this->assertSame([], SessionState::cookies());
+    }
+
+    /** @return array{int, string} exit code and what went to stderr */
+    private function forceWithStderr(string $password): array {
+        $stderr = fopen('php://memory', 'w+');
+        $command = new ConfigEppPasswordCommand(['--yes', '--force', $password]);
+        $command->useErrorStream($stderr);
+        $exit = 0;
+        $this->capture(function () use ($command, &$exit) {
+            $exit = $command->run();
+        });
+        rewind($stderr);
+        return [$exit, (string) stream_get_contents($stderr)];
     }
 
     public function testDryRunSendsNothingToTheRegistry(): void {
@@ -146,6 +183,83 @@ final class ConfigEppPasswordCommandTest extends EppTestCase
     public function testRejectsAPasswordLongerThanSixteen(): void {
         $this->expectException(UsageError::class);
         (new ConfigEppPasswordCommand([str_repeat('a', 17)]))->run();
+    }
+
+    private function stdin(string $text) {
+        $stream = fopen('php://memory', 'w+');
+        fwrite($stream, $text);
+        rewind($stream);
+        return $stream;
+    }
+
+    public function testChangesFromStdin(): void {
+        $command = new ConfigEppPasswordCommand(['--yes', '--password-stdin']);
+        $command->useErrorStream(fopen('php://memory', 'w+'));
+        $command->useInputStream($this->stdin("from-stdin\n"));
+
+        $this->capture(fn() => $this->assertSame(0, $command->run()));
+
+        $this->assertSame('from-stdin', Config::get('epp')['password']);
+        $this->assertSame(['from-stdin'], $this->attempted);
+    }
+
+    public function testForceAdoptsFromStdin(): void {
+        $command = new ConfigEppPasswordCommand(['--yes', '--force', '--password-stdin']);
+        $command->useErrorStream(fopen('php://memory', 'w+'));
+        $command->useInputStream($this->stdin("already-live\r\n"));
+
+        $this->capture(fn() => $this->assertSame(0, $command->run()));
+
+        $this->assertSame('already-live', Config::get('epp')['password']);
+    }
+
+    public function testEmptyStdinIsRefused(): void {
+        $command = new ConfigEppPasswordCommand(['--yes', '--password-stdin']);
+        $command->useInputStream($this->stdin(''));
+
+        $this->expectException(UsageError::class);
+        $command->run();
+    }
+
+    public function testStdinAndPositionalTogetherAreRefused(): void {
+        $command = new ConfigEppPasswordCommand(['--yes', '--password-stdin', 'new-password']);
+        $command->useInputStream($this->stdin("other-one\n"));
+
+        $this->expectException(UsageError::class);
+        $command->run();
+    }
+
+    public function testStdinPasswordIsValidatedBeforeAnythingIsSent(): void {
+        $command = new ConfigEppPasswordCommand(['--yes', '--password-stdin']);
+        $command->useInputStream($this->stdin(str_repeat('a', 17) . "\n"));
+
+        try {
+            $command->run();
+            $this->fail('expected a UsageError');
+        } catch (UsageError) {
+            $this->assertSame([], $this->attempted);
+            $this->assertSame('old-password', Config::get('epp')['password']);
+        }
+    }
+
+    public function testNoSourceWithoutATerminalIsRefused(): void {
+        if (stream_isatty(STDIN)) {
+            $this->markTestSkipped('needs a non-interactive stdin');
+        }
+        $command = new ConfigEppPasswordCommand(['--yes']);
+
+        $this->expectException(UsageError::class);
+        $this->expectExceptionMessage('--password-stdin');
+        $command->run();
+    }
+
+    public function testNeverEchoesThePassword(): void {
+        $command = new ConfigEppPasswordCommand(['--yes', '--json', '--force', 'secret-live']);
+        $command->useErrorStream(fopen('php://memory', 'w+'));
+
+        $output = $this->capture(fn() => $command->run());
+
+        $this->assertStringNotContainsString('secret-live', $output);
     }
 
     /**

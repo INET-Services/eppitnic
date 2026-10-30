@@ -98,14 +98,18 @@ Contact lifecycle
   ...
 Domain lifecycle
   + domain create                  st-tjcf9m-1.it       0.62s  authinfo 3Rp_xW8@qN4zVbLm, ns ns1.example.it ns2.example.it
-  ~ contact delete                 STTJCF9MA1           0.23s  EPP code '2305': still linked to the deleted domain (cleared by `selftest reap` once purged)
+  ~ contact delete                 STTJCF9MR2           0.23s  EPP code '2305': still linked to the deleted domain (cleared by `selftest reap` once purged)
   ...
-29 steps: 26 ok, 0 failed, 3 deferred, 0 skipped, in 12.1s
+21 steps: 20 ok, 0 failed, 1 deferred, 0 skipped, in 5.6s
 ```
 
-A quick run is 29 steps (8 contact lifecycle, 21 domain), 3 of them deferred:
-the registrant, admin and tech contact the domain carried when deleted. With
-`--domain` it is 31 steps, adding two verification pauses.
+A quick run is 21 steps (8 contact lifecycle, 13 domain), 1 of them deferred:
+the registrant the domain carried when deleted. The default `--ns` has three
+nameservers; the update is skipped only when `--ns` gives fewer than three.
+With `--domain` it is 23 steps, adding the two verification pauses.
+
+Every contact the run creates is a registrant (entity type 2) whose `org`
+equals its `name`; the domain has a registrant and nameservers, nothing else.
 
 `--verbose` adds the full request and response on failure and records every
 command in `transactions`/`responses`. `--json`/`--jsonl` emit one object per
@@ -131,7 +135,7 @@ nic.it keeps a contact linked to a domain until that domain is purged, 30
 days after the delete (through redemptionPeriod, then pendingDelete). So the
 contacts that were *on the domain when it was deleted* can't be removed the
 same day; those attempts report `~ deferred`, not failed. Everything else —
-a leftover domain, a contact swapped off before the deletion, contacts from a
+a leftover domain, a registrant swapped off before the deletion, contacts from a
 run that failed before creating a domain — is deleted on sight.
 
 Leftovers are written to `var/selftest/<RUN>.json`:

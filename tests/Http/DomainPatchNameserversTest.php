@@ -103,6 +103,25 @@ final class DomainPatchNameserversTest extends EppTestCase
         $this->assertSame('', $this->updateRequest());
     }
 
+    public function testAdminAndTechAloneAreAcceptedAndNothingIsSent(): void {
+        $response = $this->patch(['admin' => 'NEWADMIN12345678', 'tech' => ['TECH-NEW']]);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame('', $this->updateRequest(), 'no update goes to the registry');
+    }
+
+    public function testAdminAndTechAlongsideNameserversNeverReachTheWire(): void {
+        $response = $this->patch([
+            'admin' => 'NEWADMIN12345678', 'tech' => ['TECH-NEW'],
+            'ns' => [['name' => 'ns1.example-one.it', 'ip' => ['192.0.2.77']], 'ns2.example.net'],
+        ]);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $update = $this->updateRequest();
+        $this->assertStringContainsString('192.0.2.77', $update);
+        $this->assertStringNotContainsString('domain:contact', $update);
+    }
+
     public function testAnInvalidAddressIsRefusedBeforeAnyUpdate(): void {
         $response = $this->patch(['ns' => [['name' => 'ns1.example-one.it', 'ip' => ['not-an-ip']], 'ns2.example.net']]);
 

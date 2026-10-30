@@ -23,10 +23,10 @@ final class DomainCreateCommand extends Command
 
     public function options(): array {
         return [
-            'file='       => "read domains from this file; either one name per line, or ';'-separated rows of domain;registrant;tech[:tech...];ns[:ns...]",
+            'file='       => "read domains from this file; either one name per line, or ';'-separated rows of domain;registrant;tech[:tech...];ns[:ns...] (the tech column is ignored)",
             'registrant=' => 'registrant contact handle (required unless every --file row supplies its own)',
-            'admin='      => 'administrative contact handle (required)',
-            'tech='       => 'technical contact handles, colon-separated -- 1 to 6 (required)',
+            'admin='      => 'ignored: the registry no longer has administrative contacts',
+            'tech='       => 'ignored: the registry no longer has technical contacts',
             'ns='         => 'nameservers, colon-separated -- 2 to 6 (required)',
             'authinfo='   => 'authinfo code (generated when omitted)',
         ] + self::MUTATING_OPTIONS;
@@ -92,8 +92,6 @@ final class DomainCreateCommand extends Command
     private function rows(): array {
         $defaults = [
             'registrant' => (string) $this->option('registrant', ''),
-            'admin'      => (string) $this->option('admin', ''),
-            'tech'       => $this->splitList((string) $this->option('tech', '')),
             'ns'         => $this->splitList((string) $this->option('ns', '')),
         ];
         if ($this->hasOption('authinfo')) {
@@ -111,10 +109,6 @@ final class DomainCreateCommand extends Command
             $rows[] = [
                 'domain'     => $fields[0],
                 'registrant' => $fields[1] ?? $defaults['registrant'],
-                // the old format had no separate admin column: the registrant
-                // stood in for it
-                'admin'      => $fields[1] ?? $defaults['admin'],
-                'tech'       => isset($fields[2]) ? $this->splitList($fields[2]) : $defaults['tech'],
                 'ns'         => isset($fields[3]) ? $this->splitList($fields[3]) : $defaults['ns'],
             ] + $defaults;
         }

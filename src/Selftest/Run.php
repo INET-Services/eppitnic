@@ -153,7 +153,7 @@ final class Run
     // -----------------------------------------------------------------
 
     /**
-     * @param string $role why this contact exists: registrant, admin, tech,
+     * @param string $role why this contact exists: registrant or
      *                     disposable
      */
     public function noteContact(string $handle, string $role): void {
@@ -182,7 +182,7 @@ final class Run
      * *at deletion* counts: one swapped off earlier is attached to nothing, and
      * making it wait out someone else's purge window is an invented delay.
      *
-     * @param string[] $handles the registrant, admin and tech it carried
+     * @param string[] $handles the registrant it carried
      */
     public function blockContacts(array $handles): void {
         foreach ($handles as $handle) {

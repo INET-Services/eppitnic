@@ -25,6 +25,9 @@ final class ContactAuthinfoTest extends EppTestCase
         $contact->set('countrycode', 'IT');
         $contact->set('voice', '+39.0471000000');
         $contact->set('email', 'mario.rossi@example.it');
+        $contact->set('nationalitycode', 'IT');
+        $contact->set('entitytype', 1);
+        $contact->set('regcode', 'RSSMRA80A01A952L');
 
         return $contact;
     }

@@ -35,7 +35,7 @@ final class AuthRemoteTest extends TestCase
         R::exec('DROP TABLE IF EXISTS resellers');
         R::exec("CREATE TABLE users (id INTEGER PRIMARY KEY, reseller_id INTEGER DEFAULT 1, role TEXT DEFAULT 'user',
                  username TEXT, active INTEGER DEFAULT 1, totp_secret TEXT,
-                 must_change_password INTEGER DEFAULT 0, must_enroll_mfa INTEGER DEFAULT 0, debug INTEGER DEFAULT 0, max_token_age INTEGER, max_idle_time INTEGER, last_activity TEXT)");
+                 must_change_password INTEGER DEFAULT 0, must_enroll_mfa INTEGER DEFAULT 0, debug INTEGER DEFAULT 0, max_token_age INTEGER, token_lifetime INTEGER, max_idle_time INTEGER, last_activity TEXT)");
         R::exec("INSERT INTO users (id, username, role, active) VALUES
                  (1, 'admin', 'admin', 1), (2, 'someone', 'user', 1), (3, 'gone', 'user', 0)");
         TestAccounts::ensureReseller(1);

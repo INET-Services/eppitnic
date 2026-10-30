@@ -2,6 +2,7 @@
 
 namespace Eppitnic\Persistence;
 
+use Eppitnic\Support\Validate;
 use RedBeanPHP\R;
 
 /**
@@ -177,6 +178,31 @@ trait LocalStorage
     }
 
     /**
+     * Refuse a value longer than its column: MariaDB would fail the write in
+     * strict mode and truncate it otherwise. Sets the error on overflow.
+     *
+     * @param array $data column => value
+     */
+    private function storageFits(array $data, string $key): bool {
+        $limits = match (static::storageTable()) {
+            'contacts' => Validate::CONTACT_FIELD_MAX_LENGTHS,
+            'domains'  => Validate::DOMAIN_FIELD_MAX_LENGTHS,
+            default    => [],
+        };
+        foreach ($limits as $column => $max) {
+            $value = $data[$column] ?? null;
+            if (is_string($value) && mb_strlen($value) > $max) {
+                $this->setError(
+                    static::storageNoun() . " {$key}: {$column} is " . mb_strlen($value)
+                    . " characters, the database holds at most {$max}"
+                );
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Write changed columns back, scoped to the reseller unless admin. Writes only:
      * the history entry is the caller's, since an update records the changed
      * columns where an upsert's update half records that it was stored.
@@ -184,6 +210,9 @@ trait LocalStorage
      * @param array $data column => value
      */
     private function storageUpdate(string $key, array $data, Scope $scope): bool {
+        if ( ! $this->storageFits($data, $key)) {
+            return false;
+        }
         if ( ! $this->storageExists($key, $scope)) {
             $this->setError(static::storageNoun() . " '{$key}' not found");
             return false;
@@ -210,6 +239,9 @@ trait LocalStorage
      * @param array $data column => value
      */
     private function storageInsert(array $data, string $key): bool {
+        if ( ! $this->storageFits($data, $key)) {
+            return false;
+        }
         $params = [];
         foreach ($data as $column => $value) {
             $params[":{$column}"] = $value;

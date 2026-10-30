@@ -67,7 +67,7 @@ final class UserRolesTest extends TestCase
 
     public function testAUserIsCreatedWithARoleInAReseller(): void {
         $response = $this->asAdmin($this->app(), 'POST', '/v1/users', [
-            'username' => 'new-manager', 'password' => self::STRONG, 'role' => 'manager', 'reseller_id' => 2,
+            'username' => 'new-manager', 'email' => 'nm@example.test', 'password' => self::STRONG, 'role' => 'manager', 'reseller_id' => 2,
         ]);
 
         $this->assertSame(201, $response->getStatusCode());
@@ -79,7 +79,7 @@ final class UserRolesTest extends TestCase
 
     public function testANewPlainUserStartsWithNotificationsOff(): void {
         $response = $this->asAdmin($this->app(), 'POST', '/v1/users', [
-            'username' => 'new-user', 'password' => self::STRONG, 'reseller_id' => 2,
+            'username' => 'new-user', 'email' => 'nu@example.test', 'password' => self::STRONG, 'reseller_id' => 2,
         ]);
 
         $this->assertSame('user', self::json($response)['users'][0]['role']);
@@ -88,7 +88,7 @@ final class UserRolesTest extends TestCase
 
     public function testAnAdminCanOnlyBelongToResellerOne(): void {
         $response = $this->asAdmin($this->app(), 'POST', '/v1/users', [
-            'username' => 'bad-admin', 'password' => self::STRONG, 'role' => 'admin', 'reseller_id' => 2,
+            'username' => 'bad-admin', 'email' => 'ba@example.test', 'password' => self::STRONG, 'role' => 'admin', 'reseller_id' => 2,
         ]);
 
         $this->assertSame(400, $response->getStatusCode());

@@ -118,6 +118,7 @@ final class UserWriteRulesTest extends TestCase
             'empty username'     => [['username' => '  ']],
             'long username'      => [['username' => str_repeat('u', 33)]],
             'negative token age' => [['max_token_age' => -1]],
+            'token age off list' => [['max_token_age' => 7]],
             'text idle time'     => [['max_idle_time' => 'soon']],
             'fractional idle'    => [['max_idle_time' => 1.5]],
         ];
@@ -142,7 +143,7 @@ final class UserWriteRulesTest extends TestCase
         $app = $this->app();
 
         $response = $this->call($app, 'PUT', '/v1/users/5', [
-            'email' => '', 'max_token_age' => null, 'max_idle_time' => 0, 'username' => str_repeat('u', 32),
+            'email' => 'valid@example.test', 'max_token_age' => null, 'max_idle_time' => 0, 'username' => str_repeat('u', 32),
         ]);
 
         $this->assertSame(200, $response->getStatusCode());

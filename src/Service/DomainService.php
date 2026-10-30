@@ -30,8 +30,8 @@ final class DomainService
      * possible, so "create" on a taken domain requests a transfer instead.
      *
      * @param Client $nic a logged-in client
-     * @param array $params domain, registrant, and optionally admin, tech[],
-     *              ns[], authinfo
+     * @param array $params domain, registrant, and optionally ns[], authinfo;
+     *              admin and tech[] are accepted and ignored
      * @param int $actorId the acting user, for history; the domain belongs
      *              to its registrant's reseller (Domain::storeDB())
      * @param bool $persist write the result to the local database: a
@@ -58,12 +58,6 @@ final class DomainService
 
         $domain->set('domain', $params['domain']);
         $domain->set('registrant', $params['registrant']);
-        if ( ! empty($params['admin'])) {
-            $domain->set('admin', $params['admin']);
-        }
-        foreach ((array) ($params['tech'] ?? []) as $tech) {
-            $domain->addTECH($tech);
-        }
         foreach ((array) ($params['ns'] ?? []) as $ns) {
             $domain->addNS($ns['name'] ?? $ns, $ns['ip'] ?? null);
         }
@@ -101,7 +95,6 @@ final class DomainService
                 self::recordTransferRequest(
                     $params['domain'],
                     $params['registrant'],
-                    (array) ($params['tech'] ?? []),
                     (array) ($params['ns'] ?? [])
                 );
             } catch (\Throwable $e) {
@@ -117,14 +110,13 @@ final class DomainService
      * It belongs to its registrant's reseller. `transfers.domain` is unique,
      * so an earlier row for the name (a cancelled request) is replaced.
      *
-     * @param string[] $tech tech contacts to apply once the domain is ours
      * @param array $ns nameservers to apply: names, or {name, ip} entries
      */
-    public static function recordTransferRequest(string $name, string $registrant, array $tech = [], array $ns = []): void {
+    public static function recordTransferRequest(string $name, string $registrant, array $ns = []): void {
         $values = [
             ':reseller_id' => Domain::resellerOf($registrant),
             ':registrant'  => $registrant,
-            ':techc'       => serialize($tech),
+            ':techc'       => serialize([]),
             ':dns'         => serialize($ns),
             ':domain'      => $name,
         ];
@@ -152,7 +144,7 @@ final class DomainService
      * @param Scope $scope who imports: a registrant not stored locally yet
      *              goes to their reseller; a non-admin never touches a domain
      *              or registrant another reseller holds
-     * @return array<string, array{domain: string, registrant: string, contact_stored: string, domain_stored: string}>
+     * @return array<string, array{domain: string, registrant: string, contact_stored: string, domain_stored: string, error?: string}>
      *         per domain, each step's outcome: 'found'/'not found'/'held by
      *         another reseller', 'stored'/'not stored', or 'skipped' if an
      *         earlier step stopped it
@@ -212,7 +204,12 @@ final class DomainService
 
             // a registrant already stored locally keeps its reseller, and the
             // domain follows it (Domain::storeDB())
-            $result['contact_stored'] = $contact->storeDB($scope->resellerId, $scope->userId) ? 'stored' : 'not stored';
+            if ($contact->storeDB($scope->resellerId, $scope->userId)) {
+                $result['contact_stored'] = 'stored';
+            } else {
+                $result['contact_stored'] = 'not stored';
+                $result['error'] = $contact->getError();
+            }
 
             if ($domain->storeDB($scope->userId)) {
                 $result['domain_stored'] = 'stored';
@@ -220,6 +217,7 @@ final class DomainService
                 R::exec("DELETE FROM transfers WHERE domain = ?", [$name]);
             } else {
                 $result['domain_stored'] = 'not stored';
+                $result['error'] = trim(($result['error'] ?? '') . ' ' . $domain->getError());
             }
 
             $results[$name] = $result;
@@ -241,7 +239,7 @@ final class DomainService
      * @return array{ok: bool, domain?: Domain, error?: string, status?: int}
      */
     public static function changeOwner(Client $nic, string $name, int $resellerId, int $actorId, bool $persist = true): array {
-        $newOwner = R::getRow("SELECT id, techc FROM resellers WHERE id = ?", [$resellerId]);
+        $newOwner = R::getRow("SELECT id FROM resellers WHERE id = ?", [$resellerId]);
         if (empty($newOwner)) {
             return ['ok' => false, 'status' => 404, 'error' => "Reseller {$resellerId} not found"];
         }
@@ -251,7 +249,7 @@ final class DomainService
             return ['ok' => false, 'status' => 404, 'error' => "Domain '{$name}' not found"];
         }
 
-        // registrant and admin are always duplicated under the new owner
+        // the registrant is always duplicated under the new owner
         $oldRegistrant = new Contact($nic);
         if ( ! $oldRegistrant->fetch($domain->get('registrant'))) {
             return ['ok' => false, 'status' => 400, 'error' => 'unable to fetch current registrant: ' . $oldRegistrant->getError()];
@@ -261,57 +259,12 @@ final class DomainService
             return ['ok' => false, 'status' => 400, 'error' => 'unable to duplicate registrant contact: ' . $oldRegistrant->getError()];
         }
 
-        $newAdminHandle = null;
-        $currentAdmin = $domain->get('admin');
-        if ( ! empty($currentAdmin)) {
-            $oldAdmin = new Contact($nic);
-            if ( ! $oldAdmin->fetch($currentAdmin)) {
-                return ['ok' => false, 'status' => 400, 'error' => 'unable to fetch current admin contact: ' . $oldAdmin->getError()];
-            }
-            $newAdminHandle = $oldAdmin->duplicate($nic, $resellerId, $actorId);
-            if ($newAdminHandle === false) {
-                return ['ok' => false, 'status' => 400, 'error' => 'unable to duplicate admin contact: ' . $oldAdmin->getError()];
-            }
-        }
-
-        // tech: the new reseller's own default tech contacts (resellers.techc)
-        // if it has any on file, otherwise a duplicate of the domain's current one
-        $newTechHandles = ResellerSettings::decodeTech($newOwner['techc']);
-        if ($newTechHandles === []) {
-            $currentTech = (array) $domain->get('tech');
-            $firstTech = reset($currentTech);
-            if ( ! empty($firstTech)) {
-                $oldTech = new Contact($nic);
-                if ($oldTech->fetch($firstTech)) {
-                    $duplicate = $oldTech->duplicate($nic, $resellerId, $actorId);
-                    $newTechHandles = $duplicate === false ? [] : [$duplicate];
-                }
-            }
-        }
-
         // the registrant change is its own EPP command, requiring authinfo to
         // change alongside it -- before anything else touches $domain
         $domain->set('registrant', $newRegistrantHandle);
         $domain->set('authinfo', $domain->authinfo());
         if ( ! $domain->updateRegistrant()) {
             return ['ok' => false, 'status' => 400, 'error' => 'registrant change failed: ' . $domain->getError()];
-        }
-
-        // admin/tech go in a separate generic update(), since
-        // updateRegistrant() ignores everything but registrant/authinfo/admin
-        if ($newAdminHandle !== null) {
-            $domain->set('admin', $newAdminHandle);
-        }
-        if ($newTechHandles !== []) {
-            foreach ((array) $domain->get('tech') as $existingTech) {
-                $domain->remTECH($existingTech);
-            }
-            foreach ($newTechHandles as $newTechHandle) {
-                $domain->addTECH($newTechHandle);
-            }
-        }
-        if ($domain->hasChanges() && ! $domain->update()) {
-            return ['ok' => false, 'status' => 400, 'error' => 'admin/tech change failed: ' . $domain->getError()];
         }
 
         if ($persist) {

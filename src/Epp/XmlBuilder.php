@@ -227,9 +227,9 @@ final class XmlBuilder
     }
 
     /**
-     * @param array $data id, name, org, street[], city, sp, pc, cc, voice, fax,
-     *              email, authinfo, consentForPublishing, and for a registrant
-     *              nationalityCode/entityType/regCode/schoolCode
+     * @param array $data id, name, org, street[], city, sp, pc, cc, voice, email,
+     *              authinfo, consentForPublishing, nationalityCode, entityType,
+     *              regCode, schoolCode
      */
     public static function contactCreate(string $clTRID, array $data): string {
         $builder = new self();
@@ -256,9 +256,6 @@ final class XmlBuilder
         $builder->element($addr, 'contact:cc', $data['cc'], self::CONTACT);
 
         $builder->element($contact, 'contact:voice', $data['voice'], self::CONTACT);
-        if ((string) $data['fax'] !== '') {
-            $builder->element($contact, 'contact:fax', $data['fax'], self::CONTACT);
-        }
         $builder->element($contact, 'contact:email', $data['email'], self::CONTACT);
 
         $auth = $builder->element($contact, 'contact:authInfo', null, self::CONTACT);
@@ -269,29 +266,28 @@ final class XmlBuilder
         $extcon = $builder->object($extension, 'extcon:create', self::EXTCON, 'extcon-1.0.xsd');
         $builder->element($extcon, 'extcon:consentForPublishing', (string) $data['consentForPublishing'], self::EXTCON);
 
-        if ((int) $data['entityType'] !== 0) {
-            $registrant = $builder->element($extcon, 'extcon:registrant', null, self::EXTCON);
-            $builder->element($registrant, 'extcon:nationalityCode', $data['nationalityCode'], self::EXTCON);
-            $builder->element($registrant, 'extcon:entityType', (string) $data['entityType'], self::EXTCON);
-            $builder->element($registrant, 'extcon:regCode', $data['regCode'], self::EXTCON);
-            if ((string) $data['schoolCode'] !== '') {
-                $builder->element($registrant, 'extcon:schoolCode', $data['schoolCode'], self::EXTCON);
-            }
+        $registrant = $builder->element($extcon, 'extcon:registrant', null, self::EXTCON);
+        $builder->element($registrant, 'extcon:nationalityCode', $data['nationalityCode'], self::EXTCON);
+        $builder->element($registrant, 'extcon:entityType', (string) $data['entityType'], self::EXTCON);
+        $builder->element($registrant, 'extcon:regCode', $data['regCode'], self::EXTCON);
+        if ((string) $data['schoolCode'] !== '') {
+            $builder->element($registrant, 'extcon:schoolCode', $data['schoolCode'], self::EXTCON);
         }
 
         return $builder->finish($command, $clTRID);
     }
 
     /**
-     * @param array $postalInfo name/org pairs that changed
+     * name, org and fax are never sent: the registry fixes the first two at
+     * creation and no longer supports fax.
+     *
      * @param array $addr street/city/sp/pc/cc pairs that changed
-     * @param array $contactFields voice/fax/email pairs that changed
+     * @param array $contactFields voice/email pairs that changed
      * @param array $registrant extcon registrant fields that changed
      */
     public static function contactUpdate(
         string $clTRID,
         string $handle,
-        array $postalInfo,
         array $addr,
         array $contactFields,
         string $authinfo,
@@ -305,37 +301,26 @@ final class XmlBuilder
         $contact = $builder->object($update, 'contact:update', self::CONTACT, 'contact-1.0.xsd');
         $builder->element($contact, 'contact:id', $handle, self::CONTACT);
 
-        $hasChange = $postalInfo !== [] || $addr !== [] || $contactFields !== [] || $authinfo !== '';
+        $hasChange = $addr !== [] || $contactFields !== [] || $authinfo !== '';
         if ($hasChange) {
             $chg = $builder->element($contact, 'contact:chg', null, self::CONTACT);
 
-            if ($postalInfo !== [] || $addr !== []) {
+            if ($addr !== []) {
                 $postal = $builder->element($chg, 'contact:postalInfo', null, self::CONTACT);
                 $postal->setAttribute('type', 'loc');
 
-                foreach ($postalInfo as $field) {
+                $address = $builder->element($postal, 'contact:addr', null, self::CONTACT);
+                foreach ($addr as $field) {
                     if ((string) $field['value'] !== '') {
-                        $builder->element($postal, 'contact:' . $field['name'], (string) $field['value'], self::CONTACT);
-                    }
-                }
-                if ($addr !== []) {
-                    $address = $builder->element($postal, 'contact:addr', null, self::CONTACT);
-                    foreach ($addr as $field) {
-                        if ((string) $field['value'] !== '') {
-                            $builder->element($address, 'contact:' . $field['name'], (string) $field['value'], self::CONTACT);
-                        }
+                        $builder->element($address, 'contact:' . $field['name'], (string) $field['value'], self::CONTACT);
                     }
                 }
             }
 
             foreach ($contactFields as $field) {
                 $value = (string) $field['value'];
-                if ($value !== '') {
+                if ($value !== '' && in_array($field['name'], ['voice', 'email'], true)) {
                     $builder->element($chg, 'contact:' . $field['name'], $value, self::CONTACT);
-                } elseif ($field['name'] === 'fax') {
-                    // an empty element is EPP for "remove it", and only the
-                    // optional fax can be removed
-                    $builder->element($chg, 'contact:fax', null, self::CONTACT);
                 }
             }
 
@@ -389,7 +374,7 @@ final class XmlBuilder
     }
 
     /**
-     * @param string $infContacts 'all', 'registrant', 'admin', 'tech' or ''
+     * @param string $infContacts 'all', 'registrant' or ''
      */
     public static function domainInfo(string $clTRID, string $name, string $authinfo = '', string $infContacts = ''): string {
         $builder = new self();
@@ -406,7 +391,7 @@ final class XmlBuilder
         }
 
         // linked-contact detail is only available with the authinfo
-        if ($authinfo !== '' && $infContacts !== '') {
+        if ($authinfo !== '' && in_array($infContacts, ['all', 'registrant'], true)) {
             $extension = $builder->element($command, 'extension', null, self::EPP);
             $node = $builder->object($extension, 'extdom:infContacts', self::EXTDOM, 'extdom-2.0.xsd');
             $node->setAttribute('op', $infContacts);
@@ -460,7 +445,6 @@ final class XmlBuilder
 
     /**
      * @param array $nameservers name => ['name' => ..., 'ip' => [['type','address'], ...]]
-     * @param string[] $tech
      * @param array $dnssec digest => ['keytag','algorithm','digesttype']
      */
     public static function domainCreate(
@@ -468,8 +452,6 @@ final class XmlBuilder
         string $name,
         array $nameservers,
         string $registrant,
-        string $admin,
-        array $tech,
         string $authinfo,
         array $dnssec = []
     ): string {
@@ -490,13 +472,6 @@ final class XmlBuilder
 
         $builder->element($domain, 'domain:registrant', $registrant, self::DOMAIN);
 
-        $adminNode = $builder->element($domain, 'domain:contact', $admin, self::DOMAIN);
-        $adminNode->setAttribute('type', 'admin');
-        foreach ($tech as $handle) {
-            $node = $builder->element($domain, 'domain:contact', (string) $handle, self::DOMAIN);
-            $node->setAttribute('type', 'tech');
-        }
-
         $auth = $builder->element($domain, 'domain:authInfo', null, self::DOMAIN);
         $builder->element($auth, 'domain:pw', $authinfo, self::DOMAIN);
 
@@ -512,8 +487,8 @@ final class XmlBuilder
     }
 
     /**
-     * @param array $add ns/tech/admin to add
-     * @param array $remove ns/tech/admin to remove
+     * @param array $add ns to add
+     * @param array $remove ns to remove
      * @param array $change registrant/authinfo
      * @param array $dnssecAdd digest => key info
      * @param array $dnssecRemove digest => key info
@@ -536,10 +511,8 @@ final class XmlBuilder
 
         foreach ([['add', $add], ['rem', $remove]] as [$verb, $set]) {
             $nameservers = $set['ns'] ?? [];
-            $tech = $set['tech'] ?? [];
-            $admin = (string) ($set['admin'] ?? '');
 
-            if ($nameservers === [] && $tech === [] && $admin === '') {
+            if ($nameservers === []) {
                 continue;
             }
 
@@ -552,14 +525,6 @@ final class XmlBuilder
                     // of what is being taken away
                     $builder->hostAttr($ns, $server, $verb === 'add');
                 }
-            }
-            if ($admin !== '') {
-                $adminNode = $builder->element($node, 'domain:contact', $admin, self::DOMAIN);
-                $adminNode->setAttribute('type', 'admin');
-            }
-            foreach ($tech as $handle) {
-                $techNode = $builder->element($node, 'domain:contact', (string) $handle, self::DOMAIN);
-                $techNode->setAttribute('type', 'tech');
             }
         }
 

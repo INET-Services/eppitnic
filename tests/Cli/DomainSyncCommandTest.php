@@ -120,6 +120,9 @@ final class DomainSyncCommandTest extends EppTestCase
             'crDate' => '2020-01-01T00:00:00.000+01:00', 'exDate' => '2027-01-01T00:00:00.000+01:00',
             'authinfo' => 'AUTHINFO12345678', 'status' => 'ok',
         ];
+        // an empty admin or tech leaves the element out, as the registry now does
+        $adminLine = $f['admin'] === '' ? '' : "<domain:contact type=\"admin\">{$f['admin']}</domain:contact>";
+        $techLine  = $f['tech'] === '' ? '' : "<domain:contact type=\"tech\">{$f['tech']}</domain:contact>";
         return <<<XML
         <?xml version="1.0" encoding="UTF-8" standalone="no"?>
         <epp xmlns="urn:ietf:params:xml:ns:epp-1.0">
@@ -131,8 +134,8 @@ final class DomainSyncCommandTest extends EppTestCase
                 <domain:roid>ROID-ITNIC</domain:roid>
                 <domain:status s="{$f['status']}"/>
                 <domain:registrant>{$f['registrant']}</domain:registrant>
-                <domain:contact type="admin">{$f['admin']}</domain:contact>
-                <domain:contact type="tech">{$f['tech']}</domain:contact>
+                {$adminLine}
+                {$techLine}
                 <domain:ns>
                   <domain:hostAttr><domain:hostName>{$f['ns1']}</domain:hostName></domain:hostAttr>
                   <domain:hostAttr><domain:hostName>{$f['ns2']}</domain:hostName></domain:hostAttr>
@@ -380,6 +383,24 @@ final class DomainSyncCommandTest extends EppTestCase
         $this->assertNotEmpty($history, 'the reconciliation must be recorded');
         $this->assertStringNotContainsString('"ns"', $history['data'], 'nameservers did not move -- no spurious ns change');
         $this->assertStringContainsString('reconciled (admin)', $output);
+    }
+
+    public function testAnInfoWithoutAdminAndTechClearsTheStoredContacts(): void {
+        $this->withSettings(['enabled' => true, 'batch_size' => 25, 'cursor_id' => 0]);
+        $this->seedDomain('drifted.it');
+
+        $command = new DomainSyncCommand([]);
+        $this->withRegistry($command, [
+            $this->checkResponse(['drifted.it' => false]),
+            $this->infoResponse('drifted.it', ['admin' => '', 'tech' => '']),
+            $this->contactInfoResponse('REGI1234REGI5678'),
+        ], function () use ($command) {
+            $this->assertSame(DATA_INCONSISTENT, $command->run());
+        });
+
+        $row = R::getRow('SELECT admin, tech FROM domains WHERE domain = ?', ['drifted.it']);
+        $this->assertSame('', (string) $row['admin']);
+        $this->assertSame([], \Eppitnic\Persistence\SerializedColumn::toArray($row['tech']));
     }
 
     public function testExpiryOnlyDriftStillTriggersAWrite(): void {

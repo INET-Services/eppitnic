@@ -20,7 +20,7 @@ final class ConfigEppPasswordCommand extends Command
     }
 
     public function arguments(): string {
-        return '<new-password>';
+        return '[<new-password>]';
     }
 
     public function options(): array {
@@ -30,6 +30,7 @@ final class ConfigEppPasswordCommand extends Command
         return [
             'force'   => 'do not change the password at the registry -- verify the given value is already ' .
                 'accepted there, and adopt it locally as-is',
+            'password-stdin' => 'read the password as one line from stdin, instead of <new-password>',
             'dry-run' => 'describe what would happen (change, or verify-and-adopt), without doing it',
             'yes'     => 'do not ask for confirmation',
         ];
@@ -38,10 +39,7 @@ final class ConfigEppPasswordCommand extends Command
     public function run(): int {
         $this->database();
 
-        $password = $this->arguments[0] ?? null;
-        if ($password === null) {
-            throw new UsageError('give the new password');
-        }
+        $password = $this->password();
 
         // the registry's own rule (epp:pwType), shared with first-run setup
         // and POST /v1/session/change-password rather than stated three
@@ -72,6 +70,9 @@ final class ConfigEppPasswordCommand extends Command
             $this->warn($outcome['error']);
             return CHANGE_PASSWORD_FAILED;
         }
+        if (isset($outcome['warning'])) {
+            $this->warn($outcome['warning']);
+        }
 
         $epp = Config::get('epp');
         $this->record('registry password ' . ($force ? 'adopted' : 'changed'), [
@@ -80,5 +81,31 @@ final class ConfigEppPasswordCommand extends Command
             'lastPasswordUpdate' => $epp['lastPasswordUpdate'] ?? 0,
         ]);
         return 0;
+    }
+
+    /**
+     * From exactly one of <new-password> and --password-stdin; else asked for
+     * twice, hidden, at a terminal. Nothing is generated: --force needs the
+     * live value, and a change is the caller's to choose.
+     */
+    private function password(): string {
+        if (count($this->arguments) > 1) {
+            throw new UsageError('give one password');
+        }
+        $positional = $this->arguments[0] ?? null;
+        $stdin = $this->hasOption('password-stdin');
+        if ($positional !== null && $stdin) {
+            throw new UsageError('give only one of <new-password> and --password-stdin');
+        }
+        if ($positional !== null) {
+            return $positional;
+        }
+        if ($stdin) {
+            return $this->readPasswordStdin();
+        }
+        if ( ! stream_isatty(STDIN)) {
+            throw new UsageError('give the password as <new-password> or --password-stdin');
+        }
+        return $this->promptNewPassword();
     }
 }

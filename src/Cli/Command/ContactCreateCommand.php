@@ -33,7 +33,7 @@ final class ContactCreateCommand extends Command
     ];
 
     /** what the registry will not accept a contact without */
-    private const REQUIRED = ['name', 'street', 'city', 'province', 'postalcode', 'countrycode', 'voice', 'email'];
+    private const REQUIRED = ['name', 'street', 'city', 'province', 'postalcode', 'countrycode', 'voice', 'email', 'nationalitycode', 'entitytype'];
 
     /** entitytype value => what it means, for hints()'s multi-line breakdown */
     private const ENTITY_TYPES = [
@@ -59,12 +59,14 @@ final class ContactCreateCommand extends Command
         }
 
         return [
-            'entitytype' => "0/omitted = plain admin/tech contact, not a registrant. As a registrant:\n"
-                . implode("\n", $entityLines)
-                . "\n{$pad}requires --nationalitycode when 1 or higher",
+            'entitytype' => "every contact is a registrant:\n"
+                . implode("\n", $entityLines),
+            'name' => 'must equal --org; either one alone is copied into the other',
+            'org' => 'must equal --name; either one alone is copied into the other',
+            'fax' => 'ignored: the registry no longer supports fax',
             'province' => 'two-letter Italian province code (e.g. MI, RM); required by the registry when --countrycode=IT',
             'voice' => 'ISO international phone format, e.g. +39.0503139811; optional extension as x1234 ' .
-                '(max 10 digits) -- fax uses the same format',
+                '(max 10 digits)',
             'countrycode' => 'ISO 3166-1 country code (e.g. IT, FR, NL)',
             'nationalitycode' => "ISO 3166-1 country code of the registrant's citizenship (e.g. IT, FR, NL); " .
                 'for a non-natural-person registrant (--entitytype != 1) this matches --countrycode',
@@ -100,11 +102,12 @@ final class ContactCreateCommand extends Command
             throw new UsageError('missing required field(s): --' . implode(', --', $missing));
         }
 
-        // a registrant needs its nationality and entity type; a plain
-        // admin/tech contact is entityType 0 and needs neither
         $entityType = (int) $this->option('entitytype', 0);
-        if ($entityType > 0 && (string) $this->option('nationalitycode', '') === '') {
-            throw new UsageError('--nationalitycode is required when --entitytype is 1 or higher');
+        if ($entityType < 1 || $entityType > 7) {
+            throw new UsageError('--entitytype must be 1 to 7');
+        }
+        if (Contact::equalizeNameOrg((string) $this->option('name', ''), (string) $this->option('org', '')) === null) {
+            throw new UsageError(Contact::NAME_ORG_RULE);
         }
 
         $names = $this->names();
@@ -129,7 +132,7 @@ final class ContactCreateCommand extends Command
             $contact->set('handle', $handle ?? $contact->generateHandle());
 
             foreach (self::FIELDS as $option => $property) {
-                if ($this->hasOption($option)) {
+                if ($option !== 'fax' && $this->hasOption($option)) {
                     $contact->set($property, (string) $this->option($option));
                 }
             }
@@ -147,7 +150,10 @@ final class ContactCreateCommand extends Command
             $created = $contact->get('handle');
 
             if ($store && ! $dryRun) {
-                $contact->storeDB($resellerId, $userId);
+                if ( ! $contact->storeDB($resellerId, $userId)) {
+                    $this->failures++;
+                    $this->warn("{$created}: created at the registry, not stored (" . $contact->getError() . ')');
+                }
             }
 
             $this->record(
@@ -156,6 +162,6 @@ final class ContactCreateCommand extends Command
             );
         });
 
-        return ($created === null && ! $dryRun) ? CONTACT_CREATE_FAILED : 0;
+        return (($created === null && ! $dryRun) || $this->failures > 0) ? CONTACT_CREATE_FAILED : 0;
     }
 }

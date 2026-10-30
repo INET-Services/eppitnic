@@ -97,7 +97,7 @@ final class UserManagerRightsTest extends TestCase
 
     public function testAManagerCreatesAUserInTheirOwnReseller(): void {
         $response = $this->call($this->app(), 'POST', '/v1/users', [
-            'username' => 'newbie', 'password' => self::STRONG,
+            'username' => 'newbie', 'email' => 'newbie@example.test', 'password' => self::STRONG,
         ], 3);
 
         $this->assertSame(201, $response->getStatusCode());
@@ -108,7 +108,7 @@ final class UserManagerRightsTest extends TestCase
 
     public function testAManagerMayExplicitlyNameTheirOwnReseller(): void {
         $response = $this->call($this->app(), 'POST', '/v1/users', [
-            'username' => 'newbie', 'password' => self::STRONG, 'reseller_id' => 2,
+            'username' => 'newbie', 'email' => 'newbie@example.test', 'password' => self::STRONG, 'reseller_id' => 2,
         ], 3);
 
         $this->assertSame(201, $response->getStatusCode());
@@ -116,7 +116,7 @@ final class UserManagerRightsTest extends TestCase
 
     public function testAManagerCannotCreateAUserInAnotherReseller(): void {
         $response = $this->call($this->app(), 'POST', '/v1/users', [
-            'username' => 'newbie', 'password' => self::STRONG, 'reseller_id' => 3,
+            'username' => 'newbie', 'email' => 'newbie@example.test', 'password' => self::STRONG, 'reseller_id' => 3,
         ], 3);
 
         $this->assertSame(403, $response->getStatusCode());
@@ -124,7 +124,7 @@ final class UserManagerRightsTest extends TestCase
 
     public function testAManagerMayCreateAnotherManager(): void {
         $response = $this->call($this->app(), 'POST', '/v1/users', [
-            'username' => 'newmanager', 'password' => self::STRONG, 'role' => 'manager',
+            'username' => 'newmanager', 'email' => 'newmanager@example.test', 'password' => self::STRONG, 'role' => 'manager',
         ], 3);
 
         $this->assertSame(201, $response->getStatusCode());
@@ -133,7 +133,7 @@ final class UserManagerRightsTest extends TestCase
 
     public function testAManagerCannotCreateAnAdmin(): void {
         $response = $this->call($this->app(), 'POST', '/v1/users', [
-            'username' => 'newbie', 'password' => self::STRONG, 'role' => 'admin',
+            'username' => 'newbie', 'email' => 'newbie@example.test', 'password' => self::STRONG, 'role' => 'admin',
         ], 3);
 
         $this->assertSame(403, $response->getStatusCode());
@@ -141,7 +141,7 @@ final class UserManagerRightsTest extends TestCase
 
     public function testAManagerCannotSetDebug(): void {
         $response = $this->call($this->app(), 'POST', '/v1/users', [
-            'username' => 'newbie', 'password' => self::STRONG, 'debug' => 1,
+            'username' => 'newbie', 'email' => 'newbie@example.test', 'password' => self::STRONG, 'debug' => 1,
         ], 3);
 
         $this->assertSame(403, $response->getStatusCode());
@@ -149,7 +149,7 @@ final class UserManagerRightsTest extends TestCase
 
     public function testAPlainUserCannotCreateAUser(): void {
         $response = $this->call($this->app(), 'POST', '/v1/users', [
-            'username' => 'newbie', 'password' => self::STRONG,
+            'username' => 'newbie', 'email' => 'newbie@example.test', 'password' => self::STRONG,
         ], 5);
 
         $this->assertSame(403, $response->getStatusCode());
@@ -157,7 +157,7 @@ final class UserManagerRightsTest extends TestCase
 
     public function testAnAdminIsStillUnrestricted(): void {
         $response = $this->call($this->app(), 'POST', '/v1/users', [
-            'username' => 'newbie', 'password' => self::STRONG, 'role' => 'admin', 'debug' => 1,
+            'username' => 'newbie', 'email' => 'newbie@example.test', 'password' => self::STRONG, 'role' => 'admin', 'debug' => 1,
         ], 1);
 
         $this->assertSame(201, $response->getStatusCode());

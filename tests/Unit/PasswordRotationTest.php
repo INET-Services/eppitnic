@@ -279,6 +279,32 @@ final class PasswordRotationTest extends EppTestCase
         $this->assertSame('old-password', Config::get('epp')['password'], 'adopt() changed the password despite a refused login');
     }
 
+    public function testAdoptClassifiesLoginRefusals(): void {
+        $cases = [
+            ['2200', '', 'credentials'],
+            ['2400', '6005', 'credentials'],
+            ['2400', '5052', 'refused'],
+            ['2501', '', 'refused'],
+            ['0000', '', 'unreachable'],
+            ['', '', 'unreachable'],
+        ];
+        foreach ($cases as [$code, $reason, $expected]) {
+            $this->assertSame($expected, RegistryPasswordChange::classifyLoginRefusal($code, $reason), "{$code}/{$reason}");
+        }
+    }
+
+    public function testAdoptDropsTheSharedSession(): void {
+        $this->seedEpp(['password' => 'old-password']);
+        Config::set('session_cookies', ['JSESSIONID' => 'old']);
+        Config::set('session_timestamp', time());
+        $this->livePassword = 'known-good';
+
+        $this->assertTrue(RegistryPasswordChange::adopt('known-good')['ok']);
+
+        $this->assertSame(0, \Eppitnic\Service\SessionState::timestamp());
+        $this->assertSame([], \Eppitnic\Service\SessionState::cookies());
+    }
+
     // ---------------------------------------------------------------
     // every rotation that lands: on record, and mailed to the system recipient
     // ---------------------------------------------------------------

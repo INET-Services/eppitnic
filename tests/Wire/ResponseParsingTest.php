@@ -89,6 +89,7 @@ final class ResponseParsingTest extends EppTestCase
 
         $contact = new Contact($this->nic);
         $contact->set('handle', 'TESTHANDLE000001');
+        $contact->set('entitytype', 1);
         $this->assertFalse($contact->create(), 'a 2xxx response was reported as success');
 
         $this->assertStringStartsWith('2', (string) $contact->svCode);

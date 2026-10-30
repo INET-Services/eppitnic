@@ -9,6 +9,8 @@ use RedBeanPHP\R;
 
 final class DomainChangeOwnerTest extends EppTestCase
 {
+    private string $contactInfo = CommandCatalog::CONTACT_INFO_RESPONSE;
+
     protected function setUp(): void {
         parent::setUp();
 
@@ -33,7 +35,7 @@ final class DomainChangeOwnerTest extends EppTestCase
             $this->transport->queueCallback(fn(string $xml) => match (true) {
                 str_contains($xml, '<domain:info') => CommandCatalog::DOMAIN_INFO_RESPONSE,
                 str_contains($xml, '<contact:check') => self::checkResponse($xml),
-                str_contains($xml, '<contact:info') => CommandCatalog::CONTACT_INFO_RESPONSE,
+                str_contains($xml, '<contact:info') => $this->contactInfo,
                 default => CommandCatalog::OK_RESPONSE,
             });
         }
@@ -57,5 +59,54 @@ final class DomainChangeOwnerTest extends EppTestCase
         $this->assertSame(2, (int) $row['reseller_id']);
         $this->assertNotSame('REGI1234REGI5678', $row['registrant']);
         $this->assertSame($result['domain']->get('registrant'), $row['registrant']);
+
+        $sent = implode("\n", $this->transport->requests);
+        $this->assertStringNotContainsString('type="admin"', $sent);
+        $this->assertStringNotContainsString('type="tech"', $sent);
+        $this->assertStringNotContainsString('contact:fax', $sent);
+        $this->assertSame(1, substr_count($sent, '<domain:update'), 'only the registrant change is sent');
+    }
+
+    public function testTheDuplicateCarriesEqualNameAndOrg(): void {
+        DomainService::changeOwner($this->nic, 'example-one.it', 2, 1);
+
+        $creates = array_values(array_filter($this->transport->requests, fn($r) => str_contains($r, '<contact:create')));
+        $this->assertCount(1, $creates);
+        $this->assertStringContainsString('<contact:name>Rossi &amp; Figli S.r.l.</contact:name>', $creates[0]);
+        $this->assertStringContainsString('<contact:org>Rossi &amp; Figli S.r.l.</contact:org>', $creates[0]);
+    }
+
+    public function testANaturalPersonDuplicatesWithOrgAsNameAndOrg(): void {
+        $this->contactInfo = str_replace(
+            ['<contact:org>Rossi &amp; Figli S.r.l.</contact:org>', '<extcon:entityType>2'],
+            ['<contact:org>Rossi Srl</contact:org>', '<extcon:entityType>1'],
+            CommandCatalog::CONTACT_INFO_RESPONSE
+        );
+
+        DomainService::changeOwner($this->nic, 'example-one.it', 2, 1);
+
+        $create = $this->createRequest();
+        $this->assertStringContainsString('<contact:name>Rossi Srl</contact:name>', $create);
+        $this->assertStringContainsString('<contact:org>Rossi Srl</contact:org>', $create);
+    }
+
+    public function testAnEmptyOrgDuplicatesWithTheNameAsNameAndOrg(): void {
+        $this->contactInfo = str_replace(
+            '<contact:org>Rossi &amp; Figli S.r.l.</contact:org>',
+            '',
+            CommandCatalog::CONTACT_INFO_RESPONSE
+        );
+
+        DomainService::changeOwner($this->nic, 'example-one.it', 2, 1);
+
+        $create = $this->createRequest();
+        $this->assertStringContainsString('<contact:name>Mario Rossi</contact:name>', $create);
+        $this->assertStringContainsString('<contact:org>Mario Rossi</contact:org>', $create);
+    }
+
+    private function createRequest(): string {
+        $creates = array_values(array_filter($this->transport->requests, fn($r) => str_contains($r, '<contact:create')));
+        $this->assertCount(1, $creates);
+        return $creates[0];
     }
 }

@@ -9,9 +9,9 @@ use Eppitnic\Selftest\Run;
 use Eppitnic\Selftest\Scenario;
 
 /**
- * A domain from registration to deletion, with six contacts -- a spare admin,
- * tech and registrant to swap the originals for. The deletes at the end are
- * attempts: those still on the domain are deferred to `selftest reap`.
+ * A domain from registration to deletion, with two registrants -- a spare one
+ * to swap the first for. The deletes at the end are attempts: those still on
+ * the domain are deferred to `selftest reap`.
  *
  * @category    Net
  * @package     Eppitnic\Selftest\Scenario\DomainLifecycle
@@ -51,21 +51,19 @@ final class DomainLifecycle implements Scenario
     }
 
     public function execute(Run $run): void {
-        $registrant = $this->contact($run, 'R', 1, true);
-        $admin      = $this->contact($run, 'A', 1, false);
-        $tech       = $this->contact($run, 'T', 1, false);
+        $registrant = $this->contact($run, 'R', 1);
 
-        if ($registrant === null || $admin === null || $tech === null) {
-            $run->skip('domain create', '', 'the contacts a domain needs could not be created');
+        if ($registrant === null) {
+            $run->skip('domain create', '', 'the registrant a domain needs could not be created');
             return;
         }
 
         $name = $this->domain ?? $run->names->domain();
 
-        if ($this->createIt($run, $name, $registrant, $admin, $tech)) {
+        if ($this->createIt($run, $name, $registrant)) {
             $this->awaitVerification($run, $name);
-            $this->readItBack($run, $name, $registrant, $admin, $tech);
-            $this->updateIt($run, $name, $tech);
+            $this->readItBack($run, $name, $registrant);
+            $this->updateIt($run, $name);
             $this->changeRegistrant($run, $name);
             $this->deleteIt($run, $name);
         }
@@ -80,18 +78,17 @@ final class DomainLifecycle implements Scenario
     /**
      * @return string|null the handle, or null if it could not be created
      */
-    private function contact(Run $run, string $role, int $index, bool $isRegistrant): ?string {
+    private function contact(Run $run, string $role, int $index): ?string {
         $handle = $run->names->handle($role, $index);
-        $what = $isRegistrant ? 'registrant' : ($role === 'A' ? 'admin' : 'tech');
 
-        $ok = $run->step("contact create ({$what})", $handle, function () use ($run, $handle, $isRegistrant, $what) {
+        $ok = $run->step('contact create (registrant)', $handle, function () use ($run, $handle) {
             $contact = new Contact($run->nic);
-            ContactFactory::fill($contact, $handle, $isRegistrant);
+            ContactFactory::fill($contact, $handle);
 
             $run->ensure($contact->create(), $contact);
-            $run->noteContact($handle, $what);
+            $run->noteContact($handle, 'registrant');
 
-            return $isRegistrant ? 'entity type 2, with a registration code' : 'entity type 0';
+            return 'entity type 2, with a registration code';
         });
 
         if ( ! $ok) {
@@ -106,7 +103,7 @@ final class DomainLifecycle implements Scenario
     // create
     // -----------------------------------------------------------------
 
-    private function createIt(Run $run, string $name, string $registrant, string $admin, string $tech): bool {
+    private function createIt(Run $run, string $name, string $registrant): bool {
         $run->step('domain check', $name, function () use ($run, $name) {
             $domain = new Domain($run->nic);
             $answer = $domain->check($name);
@@ -119,19 +116,17 @@ final class DomainLifecycle implements Scenario
 
         $nameservers = array_slice($this->nameservers, 0, 2);
 
-        $created = $run->step('domain create', $name, function () use ($run, $name, $registrant, $admin, $tech, $nameservers) {
+        $created = $run->step('domain create', $name, function () use ($run, $name, $registrant, $nameservers) {
             $domain = new Domain($run->nic);
             $domain->set('domain', $name);
             $domain->set('registrant', $registrant);
-            $domain->set('admin', $admin);
-            $domain->addTECH($tech);
             foreach ($nameservers as $ns) {
                 $domain->addNS($ns);
             }
 
             $run->ensure($domain->create(), $domain);
             $run->noteDomain($name);
-            $this->onDomain = ['registrant' => $registrant, 'admin' => $admin, 'tech' => $tech];
+            $this->onDomain = ['registrant' => $registrant];
 
             return 'authinfo ' . $domain->get('authinfo') . ', ns ' . implode(' ', $nameservers);
         });
@@ -155,10 +150,10 @@ final class DomainLifecycle implements Scenario
     // read it back
     // -----------------------------------------------------------------
 
-    private function readItBack(Run $run, string $name, string $registrant, string $admin, string $tech): void {
+    private function readItBack(Run $run, string $name, string $registrant): void {
         $expected = array_slice($this->nameservers, 0, 2);
 
-        $run->step('domain info', $name, function () use ($run, $name, $registrant, $admin, $tech, $expected) {
+        $run->step('domain info', $name, function () use ($run, $name, $registrant, $expected) {
             $domain = new Domain($run->nic);
             $run->ensure($domain->fetch($name), $domain);
 
@@ -166,81 +161,46 @@ final class DomainLifecycle implements Scenario
                 (string) $domain->get('registrant') === $registrant,
                 "registrant came back as '" . $domain->get('registrant') . "'"
             );
-            $run->expect(
-                (string) $domain->get('admin') === $admin,
-                "admin came back as '" . $domain->get('admin') . "'"
-            );
-            $run->expect(
-                in_array($tech, (array) $domain->get('tech'), true),
-                'the technical contact is not among those the registry holds'
-            );
 
-            return 'registrant, admin and tech match' . self::checkNameservers($run, $domain, $expected);
+            return 'registrant matches' . self::checkNameservers($run, $domain, $expected);
         });
     }
 
     // -----------------------------------------------------------------
-    // update: a second admin, a second tech, a different nameserver
+    // update: a different nameserver
     // -----------------------------------------------------------------
 
-    private function updateIt(Run $run, string $name, string $firstTech): void {
-        $admin = $this->contact($run, 'A', 2, false);
-        $tech  = $this->contact($run, 'T', 2, false);
-
-        if ($admin === null || $tech === null) {
-            $run->skip('domain update', $name, 'the replacement contacts could not be created');
-            return;
-        }
-
+    private function updateIt(Run $run, string $name): void {
         // The whole target set, not a remove/add pair: the registry reports no
         // nameserver until it passes DNS checks, so fetch() often finds none
         // and remNS/addNS against nothing leaves one -- refused as 9005
-        $swapped = count($this->nameservers) >= 3;
-        $target = $swapped
-            ? [$this->nameservers[0], $this->nameservers[2]]
-            : array_slice($this->nameservers, 0, 2);
+        if (count($this->nameservers) < 3) {
+            $run->skip('domain update', $name, 'only two nameservers were given; a third is needed to swap one');
+            return;
+        }
+        $target = [$this->nameservers[0], $this->nameservers[2]];
 
-        $applied = $run->step('domain update', $name, function () use ($run, $name, $admin, $tech, $firstTech, $target, $swapped) {
+        $applied = $run->step('domain update', $name, function () use ($run, $name, $target) {
             $domain = new Domain($run->nic);
             $run->ensure($domain->fetch($name), $domain);
-
-            $domain->set('admin', $admin);
-            $domain->remTECH($firstTech);
-            $domain->addTECH($tech);
 
             self::reconcileNameservers($domain, $target);
 
             $run->ensure($domain->update(), $domain);
-            $this->onDomain['admin'] = $admin;
-            $this->onDomain['tech'] = $tech;
 
-            return $swapped
-                ? 'admin and tech swapped, nameservers now ' . implode(' ', $target)
-                : 'admin and tech swapped';
+            return 'nameservers now ' . implode(' ', $target);
         });
 
-        if ( ! $swapped) {
-            $run->skip('nameserver swap', $name, 'only two nameservers were given; a third is needed to swap one');
-        }
         if ( ! $applied) {
             return;
         }
         $this->awaitVerification($run, $name);
 
-        $run->step('domain info after update', $name, function () use ($run, $name, $admin, $tech, $firstTech, $target) {
+        $run->step('domain info after update', $name, function () use ($run, $name, $target) {
             $domain = new Domain($run->nic);
             $run->ensure($domain->fetch($name), $domain);
 
-            $run->expect(
-                (string) $domain->get('admin') === $admin,
-                "admin came back as '" . $domain->get('admin') . "'"
-            );
-
-            $held = (array) $domain->get('tech');
-            $run->expect(in_array($tech, $held, true), 'the new technical contact is not there');
-            $run->expect( ! in_array($firstTech, $held, true), 'the old technical contact is still there');
-
-            return 'contacts swapped' . self::checkNameservers($run, $domain, $target);
+            return 'nameservers swapped' . self::checkNameservers($run, $domain, $target);
         });
     }
 
@@ -317,7 +277,7 @@ final class DomainLifecycle implements Scenario
      * the authinfo with it -- so this also proves the new authinfo took.
      */
     private function changeRegistrant(Run $run, string $name): void {
-        $registrant = $this->contact($run, 'R', 2, true);
+        $registrant = $this->contact($run, 'R', 2);
 
         if ($registrant === null) {
             $run->skip('domain set-registrant', $name, 'the second registrant could not be created');

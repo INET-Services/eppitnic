@@ -13,8 +13,13 @@ CREATE TABLE `resellers` (
   -- dnsset the name of the set new domains start with
   `techc`                 text,
   `countrycode`           varchar(2),
+  -- contact type 1-7 new contacts start from; NULL = none
+  `entitytype`            tinyint unsigned NULL,
   `nssets`                text,
   `dnsset`                varchar(64),
+  -- DNSSEC algorithm and digest type new DS records start from; NULL = none
+  `dnssec_algorithm`      tinyint unsigned NULL,
+  `dnssec_digesttype`     tinyint unsigned NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -32,7 +37,8 @@ CREATE TABLE `users` (
   -- login is refused until the user has changed the password / enrolled MFA
   -- (Auth::withAccount(), POST /v1/users/authenticate)
   `must_change_password`  tinyint NOT NULL DEFAULT 0,
-  `email`                 varchar(64),
+  -- unique: the address a password reset is sent to
+  `email`                 varchar(256) NULL,
   -- this user's own email notifications (see Service\Notifier), applied
   -- only while the system-wide `smtp.recipient_mode` includes 'user': a
   -- switch, a JSON list of Notifier::MESSAGE_TYPES values (NULL/empty =
@@ -45,6 +51,7 @@ CREATE TABLE `users` (
   `totp_secret_pending`   varchar(64),
   `must_enroll_mfa`       tinyint NOT NULL DEFAULT 0,
   `max_token_age`         int,
+  `token_lifetime`        smallint unsigned NULL,
   `max_idle_time`         int,
   `last_activity`         datetime DEFAULT NULL,
   `debug`                 tinyint    DEFAULT 0,
@@ -53,9 +60,37 @@ CREATE TABLE `users` (
   PRIMARY KEY (`id`),
   UNIQUE KEY (`api_token`),
   UNIQUE KEY (`username`),
+  UNIQUE KEY (`email`),
   -- RESTRICT, not CASCADE: MariaDB refuses a CHECK over a cascading column
   CONSTRAINT FOREIGN KEY (reseller_id) REFERENCES resellers(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT `admins_belong_to_reseller_1` CHECK (`role` <> 'admin' OR `reseller_id` = 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Only a SHA-256 of the emailed token is kept; used_at is set when it is spent
+CREATE TABLE `password_resets` (
+  `id`                    serial,
+  `user_id`               bigint unsigned NOT NULL,
+  `token_hash`            char(64) NOT NULL,
+  `created_at`            datetime NOT NULL,
+  `expires_at`            datetime NOT NULL,
+  `used_at`               datetime NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY (`token_hash`),
+  KEY (`user_id`),
+  KEY (`expires_at`),
+  CONSTRAINT FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- What the password-reset rate limits count, one row per attempt answered
+CREATE TABLE `password_reset_attempts` (
+  `id`                    serial,
+  `kind`                  enum('request','confirm') NOT NULL,
+  `network`               varchar(64) NULL,
+  `email_hash`            char(64) NULL,
+  `created_at`            datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY (`network`, `created_at`),
+  KEY (`email_hash`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Also holds `security` rows for non-mutating events (e.g. credential
@@ -137,12 +172,12 @@ CREATE TABLE `contacts` (
   `countrycode`           varchar(2),
   `voice`                 varchar(64),
   `fax`                   varchar(64),
-  `email`                 varchar(64),
+  `email`                 varchar(256),
   `authinfo`              varchar(64),
   `consentforpublishing`  tinyint unsigned,
   `nationalitycode`       varchar(2),
   `entitytype`            tinyint unsigned,
-  `regcode`               varchar(32),
+  `regcode`               varchar(36),
   `schoolcode`            varchar(32),
   `active`                tinyint DEFAULT 1,
   PRIMARY KEY (`id`),
@@ -238,7 +273,7 @@ CREATE TABLE `settings` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `settings` (`key`, `value`) VALUES
-  ('schema_version', '"070000"'),
+  ('schema_version', '"070100"'),
   ('region', '{"timezone":"Europe/Rome","lc_monetary":"it_IT.UTF-8"}'),
   ('jwt_psk', '""'),
   ('safe_networks', '["127.0.0.1/32"]'),

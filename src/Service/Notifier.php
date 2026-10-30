@@ -493,7 +493,21 @@ final class Notifier
         }
     }
 
-    private static function send(array $smtp, string $to, string $subject, string $body): void {
+    /**
+     * A message to one address, outside the poll/deletion filters.
+     *
+     * @return bool whether it was handed to the mail server; false too when
+     *         mail is off or has no host or sender to send from
+     */
+    public static function sendDirect(string $to, string $subject, string $body): bool {
+        $smtp = Config::get('smtp');
+        if (empty($smtp['enabled']) || ($smtp['host'] ?? '') === '' || ($smtp['sender'] ?? '') === '') {
+            return false;
+        }
+        return self::send($smtp, $to, $subject, $body);
+    }
+
+    private static function send(array $smtp, string $to, string $subject, string $body): bool {
         try {
             $mail = self::makeMailer();
             self::configureMailer($mail, $smtp);
@@ -501,11 +515,13 @@ final class Notifier
             $mail->Subject = $subject;
             $mail->Body = $body;
             $mail->send();
+            return true;
         } catch (MailException|\Throwable $e) {
             // A notification is never allowed to break the job that
             // triggered it -- poll process and domain reap-deletions have
             // real work to do regardless of whether mail delivery works.
             error_log('Notifier::send failed: ' . $e->getMessage());
+            return false;
         }
     }
 
