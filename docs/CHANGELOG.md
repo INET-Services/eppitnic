@@ -1,5 +1,25 @@
 # Changelog
 
+## Version 7.0.1
+Bugfix release: glue records can now be shown and edited, including the
+nameservers a registry has not validated yet. No schema change.
+
+- Glue records: `GET /v1/domains/{name}` (and every response using the same
+  shape) returns `ns` as `[{name, ipv4, ipv6}]` instead of bare names. PATCH
+  and create accept `{name, ipv4, ipv6}` entries (the older `ip` and plain
+  names still work); glue is checked against the registry rules before the
+  registry is asked (only for a nameserver under the domain, which needs one
+  IPv4 and may add one IPv6). A host without address fields keeps its
+  addresses; empty fields clear them.
+- The nameservers a registry has not validated yet (`extdom:infNsToValidateData`,
+  the only set for an `inactive`/`dnsHold` domain) were ignored, so such a
+  domain showed none. They are now `ns_pending` in the domain responses and
+  on `domain info` (`--json` too), apart from the validated `ns`. `domain
+  update` and PATCH on such a domain start from the pending set and send the
+  whole configuration in one `add`.
+- CLI: `domain info` prints and exports the addresses; `domain update` and
+  `domain create` take `--glue='HOST=IPV4[,IPV6];...'`.
+
 ## Version 7.0.0
 7.0 turns the library into a self-contained registrar backend: a JSON/REST
 API with its own authentication, a single `bin/eppitnic` CLI, scheduled jobs,

@@ -117,4 +117,195 @@ final class DomainPatchNameserversTest extends EppTestCase
         $this->assertSame(400, $response->getStatusCode());
         $this->assertSame([], $this->sent->requests, 'the registry was not asked');
     }
+
+    private function lastError(ResponseInterface $response): string {
+        return json_decode((string) $response->getBody(), true)['error'];
+    }
+
+    public function testGetShowsEveryNameserverWithItsAddresses(): void {
+        $app = AppFactory::create();
+        Middleware::register($app);
+        require EPPITNIC_ROOT . '/src/Api/Routes/domain.php';
+        $token = TestAccounts::issueToken([
+            'id' => 4, 'role' => 'user', 'reseller_id' => 2, 'has_totp' => false, 'max_token_age' => 60,
+        ])['token'];
+
+        $response = $app->handle(
+            (new ServerRequestFactory())->createServerRequest('GET', 'http://localhost/v1/domains/example-one.it')
+                ->withHeader('Authorization', "Bearer {$token}")
+        );
+
+        $this->assertSame([
+            ['name' => 'ns1.example-one.it', 'ipv4' => '192.0.2.1', 'ipv6' => null],
+            ['name' => 'ns2.example.net', 'ipv4' => null, 'ipv6' => null],
+        ], json_decode((string) $response->getBody(), true)['domain']['ns']);
+    }
+
+    public function testChangingTheIpv4SendsRemovalOfTheOldAndAdditionOfTheNew(): void {
+        $response = $this->patch(['ns' => [
+            ['name' => 'ns1.example-one.it', 'ipv4' => '192.0.2.77', 'ipv6' => '2001:db8::77'],
+            ['name' => 'ns2.example.net', 'ipv4' => null, 'ipv6' => null],
+        ]]);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $update = $this->updateRequest();
+        preg_match('#<domain:add>(.*?)</domain:add>#s', $update, $added);
+        preg_match('#<domain:rem>(.*?)</domain:rem>#s', $update, $removed);
+        $this->assertStringContainsString('<domain:hostAddr ip="v4">192.0.2.77</domain:hostAddr>', $added[1]);
+        $this->assertStringContainsString('<domain:hostAddr ip="v6">2001:db8::77</domain:hostAddr>', $added[1]);
+        $this->assertStringContainsString('<domain:hostName>ns1.example-one.it</domain:hostName>', $removed[1]);
+        $this->assertStringNotContainsString('hostAddr', $removed[1], 'the removal names the host only');
+        $this->assertStringNotContainsString('ns2.example.net', $update);
+    }
+
+    public function testNullingTheIpv6KeepsTheIpv4(): void {
+        $this->sent = new FakeTransport();
+        $this->sent->queue(CommandCatalog::GREETING_RESPONSE);
+        $this->sent->queue(CommandCatalog::OK_RESPONSE);
+        $this->sent->queue(str_replace(
+            '<domain:hostAddr ip="v4">192.0.2.1</domain:hostAddr>',
+            '<domain:hostAddr ip="v4">192.0.2.1</domain:hostAddr><domain:hostAddr ip="v6">2001:db8::1</domain:hostAddr>',
+            CommandCatalog::DOMAIN_INFO_RESPONSE
+        ));
+        $this->sent->queue(CommandCatalog::OK_RESPONSE);
+        $this->sent->queue(CommandCatalog::OK_RESPONSE);
+        Client::useTransportFactory(fn() => $this->sent);
+
+        $response = $this->patch(['ns' => [
+            ['name' => 'ns1.example-one.it', 'ipv4' => '192.0.2.1', 'ipv6' => null],
+            'ns2.example.net',
+        ]]);
+
+        $this->assertSame(200, $response->getStatusCode());
+        preg_match('#<domain:add>(.*?)</domain:add>#s', $this->updateRequest(), $added);
+        preg_match('#<domain:rem>(.*?)</domain:rem>#s', $this->updateRequest(), $removed);
+        $this->assertStringNotContainsString('ip="v6"', $added[1]);
+        $this->assertStringContainsString('<domain:hostName>ns1.example-one.it</domain:hostName>', $removed[1]);
+    }
+
+    public function testGlueOnAHostOutsideTheDomainIsRefused(): void {
+        $response = $this->patch(['ns' => [
+            'ns1.example-one.it', ['name' => 'ns2.example.net', 'ipv4' => '192.0.2.9'],
+        ]]);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertSame('glue addresses are only allowed for nameservers under example-one.it', $this->lastError($response));
+        $this->assertSame('', $this->updateRequest());
+    }
+
+    public function testANewHostUnderTheDomainNeedsAnIpv4(): void {
+        $response = $this->patch(['ns' => [
+            'ns1.example-one.it', ['name' => 'ns3.example-one.it', 'ipv6' => '2001:db8::3'],
+        ]]);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertSame('nameserver ns3.example-one.it under example-one.it needs an IPv4 address', $this->lastError($response));
+        $this->assertSame('', $this->updateRequest());
+    }
+
+    public function testTwoIpv4AddressesAreRefused(): void {
+        $response = $this->patch(['ns' => [
+            ['name' => 'ns1.example-one.it', 'ip' => ['192.0.2.1', '192.0.2.2']], 'ns2.example.net',
+        ]]);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertStringContainsString('only one IPv4', $this->lastError($response));
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('wrongFields')]
+    public function testAnAddressInTheWrongFieldIsRefused(string $field, string $address, string $message): void {
+        $response = $this->patch(['ns' => [['name' => 'ns1.example-one.it', $field => $address]]]);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertStringContainsString($message, $this->lastError($response));
+    }
+
+    public static function wrongFields(): array {
+        return [
+            'v6 in ipv4' => ['ipv4', '2001:db8::1', 'ns[0].ipv4 must be an IPv4 address'],
+            'v4 in ipv6' => ['ipv6', '192.0.2.1', 'ns[0].ipv6 must be an IPv6 address'],
+        ];
+    }
+
+    public function testAHostWithoutAddressFieldsKeepsItsGlue(): void {
+        $response = $this->patch(['ns' => ['ns1.example-one.it', 'ns2.example.net', 'ns3.example.net']]);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $update = $this->updateRequest();
+        $this->assertStringNotContainsString('ns1.example-one.it', $update);
+        $this->assertStringContainsString('ns3.example.net', $update);
+    }
+
+    public function testCreateRefusesBadGlueWithoutOpeningASession(): void {
+        $app = AppFactory::create();
+        Middleware::register($app);
+        require EPPITNIC_ROOT . '/src/Api/Routes/domain.php';
+        $token = TestAccounts::issueToken([
+            'id' => 4, 'role' => 'user', 'reseller_id' => 2, 'has_totp' => false, 'max_token_age' => 60,
+        ])['token'];
+
+        $response = $app->handle(
+            (new ServerRequestFactory())->createServerRequest('POST', 'http://localhost/v1/domains')
+                ->withHeader('Authorization', "Bearer {$token}")
+                ->withHeader('Content-Type', 'application/json')
+                ->withParsedBody([
+                    'domain' => 'example-two.it', 'registrant' => 'REGI1234REGI5678',
+                    'ns' => [['name' => 'ns1.example.net', 'ipv4' => '192.0.2.1'], 'ns2.example.net'],
+                ])
+        );
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertStringContainsString('only allowed for nameservers under example-two.it', $this->lastError($response));
+        $this->assertSame([], $this->sent->requests, 'the registry heard nothing');
+    }
+
+    private function queueInfo(string $info): void {
+        $this->sent = new FakeTransport();
+        $this->sent->queue(CommandCatalog::GREETING_RESPONSE);
+        $this->sent->queue(CommandCatalog::OK_RESPONSE);
+        $this->sent->queue($info);
+        $this->sent->queue(CommandCatalog::OK_RESPONSE);
+        $this->sent->queue(CommandCatalog::OK_RESPONSE);
+        Client::useTransportFactory(fn() => $this->sent);
+    }
+
+    public function testADnsHoldDomainSendsOnlyAnAddWithTheWholeConfiguration(): void {
+        $this->queueInfo(CommandCatalog::domainInfoWithPendingNs());
+
+        $response = $this->patch(['ns' => [
+            ['name' => 'ns1.example-one.it', 'ipv4' => '192.0.2.77', 'ipv6' => '2001:db8:1234:5678::1'],
+            'ns2.example.net',
+        ]]);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $update = $this->updateRequest();
+        $this->assertStringContainsString('<domain:add>', $update);
+        $this->assertStringNotContainsString('<domain:rem>', $update);
+        $this->assertStringContainsString('<domain:hostName>ns1.example-one.it</domain:hostName>', $update);
+        $this->assertStringContainsString('<domain:hostName>ns2.example.net</domain:hostName>', $update);
+        $this->assertStringContainsString('<domain:hostAddr ip="v4">192.0.2.77</domain:hostAddr>', $update);
+        $this->assertStringContainsString('<domain:hostAddr ip="v6">2001:db8:1234:5678::1</domain:hostAddr>', $update);
+    }
+
+    public function testGetShowsThePendingSetApartFromTheValidatedOne(): void {
+        $this->queueInfo(CommandCatalog::domainInfoWithPendingNs(true));
+        $app = AppFactory::create();
+        Middleware::register($app);
+        require EPPITNIC_ROOT . '/src/Api/Routes/domain.php';
+        $token = TestAccounts::issueToken([
+            'id' => 4, 'role' => 'user', 'reseller_id' => 2, 'has_totp' => false, 'max_token_age' => 60,
+        ])['token'];
+
+        $response = $app->handle(
+            (new ServerRequestFactory())->createServerRequest('GET', 'http://localhost/v1/domains/example-one.it')
+                ->withHeader('Authorization', "Bearer {$token}")
+        );
+
+        $domain = json_decode((string) $response->getBody(), true)['domain'];
+        $this->assertSame(['ns1.example-one.it', 'ns2.example.net'], array_column($domain['ns'], 'name'));
+        $this->assertSame([
+            ['name' => 'ns2.example.net', 'ipv4' => null, 'ipv6' => null],
+            ['name' => 'ns1.example-one.it', 'ipv4' => '192.0.2.1', 'ipv6' => '2001:db8:1234:5678::1'],
+        ], $domain['ns_pending']);
+    }
 }

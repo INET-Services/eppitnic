@@ -7,6 +7,7 @@ use Eppitnic\Cli\UsageError;
 use Eppitnic\Epp\Domain;
 use Eppitnic\Persistence\Scope;
 use Eppitnic\Persistence\SerializedColumn;
+use Eppitnic\Service\DomainService;
 use Eppitnic\Service\PowerDnsZones;
 use RedBeanPHP\R;
 
@@ -29,6 +30,7 @@ final class DomainUpdateCommand extends Command
         return [
             'file='     => "read rows from this file: 'domain', or 'domain;add-ns[:ns...];remove-ns[:ns...]'",
             'add-ns='   => 'nameservers to add, colon-separated',
+            'glue='     => "set glue addresses, 'HOST=IPV4[,IPV6]' separated by ';' (adds the host if new; a bare 'HOST=' clears its glue)",
             'rem-ns='   => 'nameservers to remove, colon-separated',
             'add-tech=' => 'technical contacts to add, colon-separated',
             'rem-tech=' => 'technical contacts to remove, colon-separated',
@@ -44,12 +46,19 @@ final class DomainUpdateCommand extends Command
             throw new UsageError('give at least one domain name, or --file=PATH');
         }
 
-        $hasChange = fn(array $row) => $row['add_ns'] || $row['rem_ns'] || $row['add_tech']
+        $hasChange = fn(array $row) => $row['add_ns'] || $row['rem_ns'] || $row['glue'] || $row['add_tech']
             || $row['rem_tech'] || $row['tech'] !== null || $row['admin'] !== null || $row['authinfo'] !== null;
 
         foreach ($rows as $row) {
             if ( ! $hasChange($row)) {
                 throw new UsageError("nothing to change for '{$row['domain']}': give at least one option");
+            }
+        }
+
+        // bare names need the fetched domain's glue, so only --glue is checked
+        foreach ($rows as $row) {
+            if (($error = DomainService::glueError($row['domain'], $row['glue'])) !== null) {
+                throw new UsageError("{$row['domain']}: {$error}");
             }
         }
 
@@ -69,8 +78,25 @@ final class DomainUpdateCommand extends Command
                     continue;
                 }
 
-                foreach ($row['add_ns'] as $ns) {
-                    $domain->addNS($ns);
+                $domain->startFromPendingNs();
+
+                // a host given glue is not also added bare
+                $glued = array_map('strtolower', array_column($row['glue'], 'name'));
+                $bare = array_filter($row['add_ns'], static fn($ns) => ! in_array(strtolower($ns), $glued, true));
+                $entries = array_merge(
+                    array_map(static fn($ns) => ['name' => $ns, 'ip' => null], $bare),
+                    $row['glue']
+                );
+                $glueError = DomainService::glueError($row['domain'], $entries, (array) $domain->get('ns'));
+                if ($glueError !== null) {
+                    $this->itemFailed($row['domain'], $glueError);
+                    continue;
+                }
+                foreach ($entries as $ns) {
+                    if ($domain->addNS($ns['name'], $ns['ip']) === false) {
+                        $this->itemFailed($row['domain'], $domain->getError());
+                        continue 2;
+                    }
                 }
                 foreach ($row['rem_ns'] as $ns) {
                     $domain->remNS($ns);
@@ -156,7 +182,12 @@ final class DomainUpdateCommand extends Command
      * @return array<int, array<string, mixed>>
      */
     private function rows(): array {
+        $glue = DomainService::parseGlue((string) $this->option('glue', ''));
+        if (is_string($glue)) {
+            throw new UsageError("--glue: {$glue}");
+        }
         $defaults = [
+            'glue'     => $glue,
             'add_ns'   => $this->splitList((string) $this->option('add-ns', '')),
             'rem_ns'   => $this->splitList((string) $this->option('rem-ns', '')),
             'add_tech' => $this->splitList((string) $this->option('add-tech', '')),

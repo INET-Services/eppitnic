@@ -28,6 +28,7 @@ final class DomainCreateCommand extends Command
             'admin='      => 'administrative contact handle (required)',
             'tech='       => 'technical contact handles, colon-separated -- 1 to 6 (required)',
             'ns='         => 'nameservers, colon-separated -- 2 to 6 (required)',
+            'glue='       => "glue addresses, 'HOST=IPV4[,IPV6]' separated by ';' -- only for a nameserver under the domain, which needs the IPv4",
             'authinfo='   => 'authinfo code (generated when omitted)',
         ] + self::MUTATING_OPTIONS;
     }
@@ -41,6 +42,12 @@ final class DomainCreateCommand extends Command
         foreach ($rows as $row) {
             if ($row['registrant'] === '') {
                 throw new UsageError("no registrant for '{$row['domain']}': pass --registrant, or give one in the file row");
+            }
+        }
+
+        foreach ($rows as $row) {
+            if (is_string($error = DomainService::checkedNameservers($row['domain'], $row['ns']))) {
+                throw new UsageError("{$row['domain']}: {$error}");
             }
         }
 
@@ -90,6 +97,10 @@ final class DomainCreateCommand extends Command
      * @return array<int, array<string, mixed>>
      */
     private function rows(): array {
+        $glue = DomainService::parseGlue((string) $this->option('glue', ''));
+        if (is_string($glue)) {
+            throw new UsageError("--glue: {$glue}");
+        }
         $defaults = [
             'registrant' => (string) $this->option('registrant', ''),
             'admin'      => (string) $this->option('admin', ''),
@@ -118,6 +129,14 @@ final class DomainCreateCommand extends Command
                 'ns'         => isset($fields[3]) ? $this->splitList($fields[3]) : $defaults['ns'],
             ] + $defaults;
         }
+
+        // --glue entries replace a plain name of the same host
+        foreach ($rows as &$row) {
+            $hosts = array_map('strtolower', array_column($glue, 'name'));
+            $plain = array_filter($row['ns'], static fn($ns) => ! in_array(strtolower($ns), $hosts, true));
+            $row['ns'] = array_merge(array_values($plain), $glue);
+        }
+        unset($row);
         return $rows;
     }
 

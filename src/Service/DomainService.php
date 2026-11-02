@@ -9,6 +9,7 @@ use Eppitnic\Epp\Contact;
 use Eppitnic\Epp\Domain;
 use Eppitnic\Persistence\History;
 use Eppitnic\Persistence\Scope;
+use Eppitnic\Support\Idn;
 use Eppitnic\Support\Warnings;
 use RedBeanPHP\R;
 
@@ -40,6 +41,11 @@ final class DomainService
      * @return array{ok: bool, action?: string, domain?: Domain, error?: string, warnings?: string[]}
      */
     public static function createOrTransfer(Client $nic, array $params, int $actorId, bool $persist = true): array {
+        $nameservers = self::checkedNameservers($params['domain'], $params['ns'] ?? []);
+        if (is_string($nameservers)) {
+            return ['ok' => false, 'error' => $nameservers];
+        }
+
         $domain = new Domain($nic);
         $availability = $domain->check($params['domain']);
         if ( ! $availability->answered()) {
@@ -64,8 +70,10 @@ final class DomainService
         foreach ((array) ($params['tech'] ?? []) as $tech) {
             $domain->addTECH($tech);
         }
-        foreach ((array) ($params['ns'] ?? []) as $ns) {
-            $domain->addNS($ns['name'] ?? $ns, $ns['ip'] ?? null);
+        foreach ($nameservers as $ns) {
+            if ($domain->addNS($ns['name'], $ns['ip']) === false) {
+                return ['ok' => false, 'error' => $domain->getError()];
+            }
         }
         $domain->set('authinfo', $params['authinfo'] ?? $domain->authinfo());
         $warnings = [];
@@ -102,7 +110,7 @@ final class DomainService
                     $params['domain'],
                     $params['registrant'],
                     (array) ($params['tech'] ?? []),
-                    (array) ($params['ns'] ?? [])
+                    $nameservers
                 );
             } catch (\Throwable $e) {
                 $warnings[] = Warnings::localWrite("transfer of '{$params['domain']}'", $e->getMessage());
@@ -118,14 +126,18 @@ final class DomainService
      * so an earlier row for the name (a cancelled request) is replaced.
      *
      * @param string[] $tech tech contacts to apply once the domain is ours
-     * @param array $ns nameservers to apply: names, or {name, ip} entries
+     * @param array $ns nameservers to apply: nameserverEntries() output or names
      */
     public static function recordTransferRequest(string $name, string $registrant, array $tech = [], array $ns = []): void {
         $values = [
             ':reseller_id' => Domain::resellerOf($registrant),
             ':registrant'  => $registrant,
             ':techc'       => serialize($tech),
-            ':dns'         => serialize($ns),
+            // a name alone when it carries no addresses
+            ':dns'         => serialize(array_map(
+                static fn(array|string $e): array|string => is_array($e) && ($e['ip'] ?? null) === null ? $e['name'] : $e,
+                $ns
+            )),
             ':domain'      => $name,
         ];
         if (R::getCell('SELECT id FROM transfers WHERE domain = ?', [$name])) {
@@ -324,11 +336,13 @@ final class DomainService
     }
 
     /**
-     * Normalise the nameservers of a domain update: each entry is a name, or
-     * an object {name, ip?} whose `ip` holds one or two glue addresses.
+     * Normalise the nameservers of a domain update or creation: each entry is
+     * a name, or an object with glue as `{ipv4?, ipv6?}` or `ip` (one address
+     * or a list). Glue left out means "keep as is" (null); any of the glue
+     * keys given, even empty, sets exactly those addresses.
      *
-     * @return array|string list of {name: string, ip: string[]|null} (null
-     *         when the entry carries no `ip`), or the error
+     * @return array|string list of {name: string, ip: string[]|null}, or the
+     *         error
      */
     public static function nameserverEntries(mixed $nameservers): array|string {
         if ( ! is_array($nameservers)) {
@@ -340,18 +354,121 @@ final class DomainService
             if ( ! is_string($name) || trim($name) === '') {
                 return "ns[{$i}] needs a name";
             }
-            $ip = is_array($ns) ? ($ns['ip'] ?? null) : null;
-            if ($ip !== null) {
-                $ip = is_array($ip) ? array_values($ip) : [$ip];
+            $ip = null;
+            if (is_array($ns) && array_key_exists('ip', $ns) && $ns['ip'] !== null) {
+                $ip = is_array($ns['ip']) ? array_values($ns['ip']) : [$ns['ip']];
                 foreach ($ip as $address) {
                     if ( ! is_string($address)) {
                         return "ns[{$i}].ip must be a list of addresses";
                     }
                 }
             }
+            foreach (['ipv4' => FILTER_FLAG_IPV4, 'ipv6' => FILTER_FLAG_IPV6] as $key => $flag) {
+                if ( ! is_array($ns) || ! array_key_exists($key, $ns)) {
+                    continue;
+                }
+                $ip ??= [];
+                $address = $ns[$key];
+                if ($address === null || (is_string($address) && trim($address) === '')) {
+                    continue;
+                }
+                if ( ! is_string($address) || filter_var(trim($address), FILTER_VALIDATE_IP, $flag) === false) {
+                    return "ns[{$i}].{$key} must be an " . ($key === 'ipv4' ? 'IPv4' : 'IPv6') . ' address';
+                }
+                $ip[] = trim($address);
+            }
             $entries[] = ['name' => trim($name), 'ip' => $ip];
         }
         return $entries;
+    }
+
+    /**
+     * Check glue against the registry rules: a nameserver under the domain
+     * needs exactly one IPv4 and may add one IPv6; any other has no address.
+     *
+     * @param array $entries nameserverEntries() output
+     * @param array $held the domain's current ns (hostname => details), whose
+     *              addresses stand for an entry that gives none
+     * @return string|null the error, or null when the glue is fine
+     */
+    public static function glueError(string $domain, array $entries, array $held = []): ?string {
+        $normal = static fn(string $name): string => Idn::ascii(rtrim(mb_strtolower(trim($name)), '.'));
+        $domain = $normal($domain);
+        foreach ($entries as $ns) {
+            $name = $normal($ns['name']);
+            $addresses = $ns['ip'] ?? array_column($held[$name]['ip'] ?? [], 'address');
+            $addresses = array_values(array_filter(array_map('trim', $addresses), 'strlen'));
+            foreach ($addresses as $address) {
+                if (filter_var($address, FILTER_VALIDATE_IP) === false) {
+                    return "Address '{$address}' is not a valid IPv4 or IPv6 address.";
+                }
+            }
+
+            if ( ! str_ends_with($name, '.' . $domain)) {
+                if ($ns['ip'] !== null && $addresses !== []) {
+                    return "glue addresses are only allowed for nameservers under {$domain}";
+                }
+                continue;
+            }
+            $v4 = array_filter($addresses, static fn($a) => filter_var($a, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false);
+            if (count($addresses) > 2) {
+                return "nameserver {$name} may have at most two addresses";
+            }
+            if ($v4 === []) {
+                return "nameserver {$name} under {$domain} needs an IPv4 address";
+            }
+            if (count($v4) > 1) {
+                return "nameserver {$name} may have only one IPv4 address";
+            }
+        }
+        return null;
+    }
+
+    /**
+     * nameserverEntries() followed by glueError() for a domain without
+     * nameservers yet.
+     *
+     * @return array|string the entries, or the error
+     */
+    public static function checkedNameservers(string $domain, mixed $nameservers): array|string {
+        $entries = self::nameserverEntries($nameservers);
+        return is_string($entries) ? $entries : (self::glueError($domain, $entries) ?? $entries);
+    }
+
+    /**
+     * Parse `HOST=IPV4[,IPV6]` entries separated by `;`; an empty address
+     * list (`HOST=`) clears the host's glue.
+     *
+     * @return array|string nameserverEntries() output, or the error
+     */
+    public static function parseGlue(string $glue): array|string {
+        $entries = [];
+        foreach (array_filter(array_map('trim', explode(';', $glue)), 'strlen') as $item) {
+            if ( ! str_contains($item, '=')) {
+                return "glue '{$item}' must be HOST=IPV4[,IPV6]";
+            }
+            [$name, $addresses] = explode('=', $item, 2);
+            $entries[] = ['name' => $name, 'ip' => array_values(array_filter(array_map('trim', explode(',', $addresses)), 'strlen'))];
+        }
+        return self::nameserverEntries($entries);
+    }
+
+    /**
+     * A domain's nameservers as the API shows them.
+     *
+     * @param array $ns the ns shape of Domain (hostname => details)
+     * @return array list of {name, ipv4: string|null, ipv6: string|null}
+     */
+    public static function nameserverList(array $ns): array {
+        $list = [];
+        foreach ($ns as $name => $details) {
+            $row = ['name' => (string) $name, 'ipv4' => null, 'ipv6' => null];
+            foreach ($details['ip'] ?? [] as $ip) {
+                $row[$ip['type'] === 'v6' ? 'ipv6' : 'ipv4'] ??= $ip['address'];
+            }
+            $list[] = $row;
+        }
+        return $list;
     }
 
     /**

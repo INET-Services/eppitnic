@@ -30,7 +30,8 @@ function domainToArray(Domain $domain): array {
         'registrant' => $domain->get('registrant'),
         'admin'      => $domain->get('admin'),
         'tech'       => array_keys((array)$domain->get('tech')),
-        'ns'         => array_keys((array)$domain->get('ns')),
+        'ns'         => DomainService::nameserverList((array)$domain->get('ns')),
+        'ns_pending' => DomainService::nameserverList((array)$domain->get('nsToValidate')),
         'authinfo'   => $domain->get('authinfo'),
         'dnssec'     => DomainService::dnssecList((array)$domain->get('dnssec')),
         'cr_date'    => $domain->get('crDate'),
@@ -243,6 +244,9 @@ $app->post('/v1/domains', function (Request $request, Response $response, array 
     if ( ! Validate::isDomain($params['domain'])) {
         return Json::response($response, ['error' => "'{$params['domain']}' is not a valid .it domain name"], 400);
     }
+    if (is_string($error = DomainService::checkedNameservers($params['domain'], $params['ns'] ?? []))) {
+        return Json::response($response, ['error' => $error], 400);
+    }
     if ( ! Access::canUseAsRegistrant($params['registrant'], $scope)) {
         return Json::response($response, ['error' => "Contact '{$params['registrant']}' is not yours to use as registrant"], 403);
     }
@@ -333,6 +337,11 @@ $app->patch('/v1/domains/{name}', function (Request $request, Response $response
             // diffed add/remove: caller sends the full target NS/tech/DNSSEC
             // list, we add what's missing and remove what's no longer present
             if (array_key_exists('ns', $params)) {
+                $domain->startFromPendingNs();
+                $glueError = DomainService::glueError($name, $nameservers, (array) $domain->get('ns'));
+                if ($glueError !== null) {
+                    return ['ok' => false, 'status' => 400, 'error' => $glueError];
+                }
                 $current = array_keys((array) $domain->get('ns'));
                 $target = [];
                 // addNS() leaves a nameserver alone unless its addresses changed
@@ -672,14 +681,18 @@ $app->post('/v1/domains/{name}/transfer', function (Request $request, Response $
     if ( ! Access::withinQuota($scope)) {
         return Json::response($response, ['error' => 'Daily operation quota exceeded'], 429);
     }
+    $nameservers = DomainService::checkedNameservers($name, $params['ns'] ?? []);
+    if (is_string($nameservers)) {
+        return Json::response($response, ['error' => $nameservers], 400);
+    }
     try {
-        $result = EppSession::run(function ($nic) use ($name, $params, $registrant) {
+        $result = EppSession::run(function ($nic) use ($name, $params, $registrant, $nameservers) {
             $domain = new Domain($nic);
             if ( ! $domain->transfer($name, $params['authinfo'])) {
                 return ['ok' => false, 'error' => $domain->getError()];
             }
 
-            DomainService::recordTransferRequest($name, $registrant, (array) ($params['tech'] ?? []), (array) ($params['ns'] ?? []));
+            DomainService::recordTransferRequest($name, $registrant, (array) ($params['tech'] ?? []), $nameservers);
             return ['ok' => true];
         }, $debug);
     } catch (\RuntimeException $e) {
