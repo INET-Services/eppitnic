@@ -89,6 +89,10 @@ class Domain extends AbstractObject
   protected $domain;            // -
 
   protected $ns;
+
+  // nameservers awaiting the registry's DNS validation, shaped like $ns;
+  // never part of an update's diff
+  protected $nsToValidate;
   protected $registrant;
   protected $admin;
   protected $tech;
@@ -144,6 +148,7 @@ class Domain extends AbstractObject
     $this->tech_initial      = array();
     $this->ns                = array();
     $this->ns_initial        = array();
+    $this->nsToValidate      = array();
     $this->authinfo          = $this->authinfo();
     $this->dnssec            = array();
     $this->dnssec_initial    = array();
@@ -368,6 +373,25 @@ class Domain extends AbstractObject
       return $name;
     } else {
       return FALSE;
+    }
+  }
+
+  /**
+   * For a domain whose registry copy has no validated nameservers (dnsHold),
+   * start from the set awaiting validation: the registry then needs the whole
+   * new configuration in one <add>, so every later addNS()/remNS() works on
+   * it. Not a change by itself; ns_initial stays empty, so update() adds all.
+   */
+  public function startFromPendingNs(): void {
+    if ($this->ns !== array() || $this->nsToValidate === array()) {
+      return;
+    }
+    $changed = $this->changed('ns');
+    foreach ($this->nsToValidate as $name => $host) {
+      $this->addNS($name, array_column($host['ip'] ?? array(), 'address'));
+    }
+    if ( ! $changed) {
+      unset($this->changes['ns']);
     }
   }
 
@@ -604,6 +628,22 @@ class Domain extends AbstractObject
       // if infContactsData is set
       $tmp = $this->responseExtension('extdom');
       if ($tmp !== null) {
+
+        // inactive/dnsHold domains report their nameservers only here
+        foreach ($tmp->infNsToValidateData->nsToValidate ?? array() as $set) {
+          $hosts = $set->children($ns['domain'] ?? 'urn:ietf:params:xml:ns:domain-1.0');
+          foreach ($hosts->hostAttr as $hostAttr) {
+            $name = Idn::ascii((string)$hostAttr->hostName);
+            $this->nsToValidate[$name]['name'] = $name;
+            foreach ($hostAttr->hostAddr as $ip) {
+              $address = strtolower(trim((string)$ip));
+              $this->nsToValidate[$name]['ip'][] = array(
+                'type' => filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== FALSE ? 'v6' : 'v4',
+                'address' => $address,
+              );
+            }
+          }
+        }
 
         // verify extended states
         if (@is_object($tmp->infData->ownStatus)) {

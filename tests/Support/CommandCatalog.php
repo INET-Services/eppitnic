@@ -119,6 +119,31 @@ final class CommandCatalog
     </epp>
     XML;
 
+    /**
+     * DOMAIN_INFO_RESPONSE for a delegation not validated yet: the new set
+     * rides in the extension. Without $validated the domain:ns block is gone
+     * (dnsHold); with it the old set stays (pendingUpdate).
+     */
+    public static function domainInfoWithPendingNs(bool $validated = false): string {
+        $xml = self::DOMAIN_INFO_RESPONSE;
+        if ( ! $validated) {
+            $xml = preg_replace('#<domain:ns>.*?</domain:ns>#s', '', $xml);
+        }
+        $pending = <<<'XML'
+              <extdom:infNsToValidateData xmlns:extdom="http://www.nic.it/ITNIC-EPP/extdom-2.0" xmlns:domain="urn:ietf:params:xml:ns:domain-1.0">
+                <extdom:nsToValidate>
+                  <domain:hostAttr><domain:hostName>ns2.example.net</domain:hostName></domain:hostAttr>
+                  <domain:hostAttr>
+                    <domain:hostName>ns1.example-one.it</domain:hostName>
+                    <domain:hostAddr ip="v4">192.0.2.1</domain:hostAddr>
+                    <domain:hostAddr ip="v6">2001:db8:1234:5678::1</domain:hostAddr>
+                  </domain:hostAttr>
+                </extdom:nsToValidate>
+              </extdom:infNsToValidateData>
+        XML;
+        return str_replace('</extension>', $pending . "\n        </extension>", $xml);
+    }
+
     public const CONTACT_INFO_RESPONSE = <<<'XML'
     <?xml version="1.0" encoding="UTF-8" standalone="no"?>
     <epp xmlns="urn:ietf:params:xml:ns:epp-1.0">

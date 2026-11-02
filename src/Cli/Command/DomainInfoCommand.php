@@ -5,6 +5,7 @@ namespace Eppitnic\Cli\Command;
 use Eppitnic\Cli\Command;
 use Eppitnic\Cli\UsageError;
 use Eppitnic\Epp\Domain;
+use Eppitnic\Service\DomainService;
 
 /**
  * Everything the registry knows about a domain.
@@ -58,7 +59,8 @@ final class DomainInfoCommand extends Command
                     'registrant' => $domain->get('registrant'),
                     'admin'      => $domain->get('admin'),
                     'tech'       => array_keys((array) $domain->get('tech')),
-                    'ns'         => array_keys((array) $domain->get('ns')),
+                    'ns'         => DomainService::nameserverList((array) $domain->get('ns')),
+                    'ns_pending' => DomainService::nameserverList((array) $domain->get('nsToValidate')),
                     'status'     => $domain->get('status'),
                     'authinfo'   => $domain->get('authinfo'),
                     'cr_date'    => $domain->get('crDate'),
@@ -98,8 +100,10 @@ final class DomainInfoCommand extends Command
         foreach ($d['tech'] as $tech) {
             $out .= sprintf("  %-12s %s\n", 'tech', $tech);
         }
-        foreach ($d['ns'] as $ns) {
-            $out .= sprintf("  %-12s %s\n", 'ns', $ns);
+        foreach (['ns' => 'ns', 'ns_pending' => 'ns (pending validation)'] as $key => $label) {
+            foreach ($d[$key] as $ns) {
+                $out .= sprintf("  %-12s %s\n", $label, implode('  ', array_filter([$ns['name'], $ns['ipv4'], $ns['ipv6']])));
+            }
         }
         $out .= sprintf("  %-12s %s\n", 'status', implode(', ', (array) $d['status']));
         $out .= sprintf("  %-12s %s\n", 'created', $d['cr_date']);

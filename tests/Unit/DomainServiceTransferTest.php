@@ -36,7 +36,7 @@ final class DomainServiceTransferTest extends EppTestCase
             'domain'     => 'example-two.it',
             'registrant' => 'REGI1234REGI5678',
             'tech'       => ['TECH1234TECH5678'],
-            'ns'         => [['name' => 'ns1.example.it', 'ip' => ['192.0.2.1']], 'ns2.example.it'],
+            'ns'         => [['name' => 'ns1.example-two.it', 'ip' => ['192.0.2.1']], 'ns2.example.it'],
             'authinfo'   => 'SECRET1234567890',
         ];
     }

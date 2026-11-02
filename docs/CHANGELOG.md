@@ -55,6 +55,20 @@ schema upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   registrant of an active local domain or pending transfer-in before asking
   the registry, naming the domains.
 
+- Glue records: `GET /v1/domains/{name}` (and every response using the same
+  shape) returns `ns` as `[{name, ipv4, ipv6}]` instead of bare names. PATCH
+  and create accept `{name, ipv4, ipv6}` entries; glue is checked against the
+  registry rules before the registry is asked (only for a nameserver under the
+  domain, which needs one IPv4 and may add one IPv6). `domain info` prints and
+  exports the addresses, and `domain update` / `domain create` take
+  `--glue='HOST=IPV4[,IPV6];...'`.
+- The nameservers a registry has not validated yet (`extdom:nsToValidate`,
+  the only set for an `inactive`/`dnsHold` domain) were ignored, so such a
+  domain showed none. They are now `ns_pending` in the domain responses and
+  on `domain info` (`--json` too), apart from the validated `ns`. `domain
+  update` and PATCH on such a domain start from the pending set and send the
+  whole configuration in one `add`.
+
 ### Users and sessions
 
 - `users.email` is required, unique (case-insensitively) and 256 characters

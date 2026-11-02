@@ -83,6 +83,50 @@ final class DomainCommandTest extends EppTestCase
         }
     }
 
+    public function testInfoPrintsEachNameserverWithItsAddresses(): void {
+        $command = new DomainInfoCommand(['example-one.it']);
+        $response = str_replace(
+            '<domain:hostAddr ip="v4">192.0.2.1</domain:hostAddr>',
+            '<domain:hostAddr ip="v4">192.0.2.1</domain:hostAddr><domain:hostAddr ip="v6">2001:db8::1</domain:hostAddr>',
+            CommandCatalog::DOMAIN_INFO_RESPONSE
+        );
+
+        $output = $this->withRegistry($command, [$response], function () use ($command) {
+            $command->run();
+        });
+
+        $this->assertMatchesRegularExpression('/^  ns +ns1\.example-one\.it  192\.0\.2\.1  2001:db8::1$/m', $output);
+        $this->assertMatchesRegularExpression('/^  ns +ns2\.example\.net$/m', $output);
+    }
+
+    public function testInfoShowsTheNameserversPendingValidation(): void {
+        $command = new DomainInfoCommand(['example-one.it']);
+
+        $output = $this->withRegistry($command, [CommandCatalog::domainInfoWithPendingNs()], function () use ($command) {
+            $command->run();
+        });
+
+        $this->assertMatchesRegularExpression(
+            '/^  ns \(pending validation\) +ns1\.example-one\.it  192\.0\.2\.1  2001:db8:1234:5678::1$/m',
+            $output
+        );
+        $this->assertDoesNotMatchRegularExpression('/^  ns +ns/m', $output);
+    }
+
+    public function testInfoJsonCarriesThePendingSet(): void {
+        $command = new DomainInfoCommand(['--json', 'example-one.it']);
+
+        $output = $this->withRegistry($command, [CommandCatalog::domainInfoWithPendingNs()], function () use ($command) {
+            $command->run();
+            $command->flush();
+        });
+
+        $decoded = json_decode($output, true);
+        $this->assertSame([], $decoded[0]['ns']);
+        $this->assertSame('ns2.example.net', $decoded[0]['ns_pending'][0]['name']);
+        $this->assertSame('2001:db8:1234:5678::1', $decoded[0]['ns_pending'][1]['ipv6']);
+    }
+
     public function testInfoJsonCarriesTheStructuredRecord(): void {
         $command = new DomainInfoCommand(['--json', 'example-one.it']);
 
@@ -95,7 +139,10 @@ final class DomainCommandTest extends EppTestCase
         $this->assertIsArray($decoded);
         $this->assertSame('example-one.it', $decoded[0]['domain']);
         $this->assertSame(['TECH1234TECH5678'], $decoded[0]['tech']);
-        $this->assertContains('ns1.example-one.it', $decoded[0]['ns']);
+        $this->assertSame([
+            ['name' => 'ns1.example-one.it', 'ipv4' => '192.0.2.1', 'ipv6' => null],
+            ['name' => 'ns2.example.net', 'ipv4' => null, 'ipv6' => null],
+        ], $decoded[0]['ns']);
     }
 
     /**
