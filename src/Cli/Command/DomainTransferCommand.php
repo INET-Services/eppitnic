@@ -14,7 +14,8 @@ use RedBeanPHP\R;
 /**
  * The four sides of a domain transfer.
  *
- *   request  claim a domain held by another registrar, for a registrant
+ *   request  claim a domain held by another registrar; with a registrant, also
+ *            trade it to that registrant (transfer-trade)
  *   approve  agree to somebody else's claim on a domain we hold
  *   reject   refuse it
  *   cancel   withdraw a request we made ourselves
@@ -35,7 +36,7 @@ final class DomainTransferCommand extends Command
         return [
             'file='       => "read rows from this file: 'domain', 'domain;authinfo' or 'domain;authinfo;registrant' per line",
             'authinfo='   => 'the authinfo code, when it is the same for every domain',
-            'registrant=' => 'registrant contact handle for a request (required unless every row supplies its own)',
+            'registrant=' => 'makes a request a transfer-trade: the domain changes to this registrant contact (a row may carry its own); without, it keeps its registrant',
         ] + self::MUTATING_OPTIONS;
     }
 
@@ -68,9 +69,6 @@ final class DomainTransferCommand extends Command
                 if ($authinfo === '') {
                     throw new UsageError("no authinfo for '{$name}': pass --authinfo, or use 'domain;authinfo' rows");
                 }
-                if ($registrants[$name] === '') {
-                    throw new UsageError("no registrant for '{$name}': pass --registrant, or give one in the file row");
-                }
             }
         }
 
@@ -85,7 +83,7 @@ final class DomainTransferCommand extends Command
 
         // refused before the registry hears of it: the row is stored under it
         if ($operation === 'request' && ! $dryRun) {
-            foreach (array_unique($registrants) as $handle) {
+            foreach (array_unique(array_filter($registrants, 'strlen')) as $handle) {
                 if ((int) R::getCell('SELECT COUNT(*) FROM contacts WHERE handle = ?', [$handle]) === 0) {
                     throw new UsageError("registrant '{$handle}' is not a stored contact");
                 }
@@ -100,7 +98,7 @@ final class DomainTransferCommand extends Command
                 $domain = new Domain($nic);
 
                 $ok = match ($operation) {
-                    'request' => $domain->transfer($name, $authinfo),
+                    'request' => $domain->transfer($name, $authinfo, $registrants[$name]),
                     'approve' => $domain->transferApprove($name, $authinfo),
                     'reject'  => $domain->transferReject($name, $authinfo),
                     'cancel'  => $domain->transferCancel($name, $authinfo),
@@ -131,7 +129,7 @@ final class DomainTransferCommand extends Command
      */
     private function recordLocally(string $operation, string $name, string $registrant, Scope $scope, string $authinfo): void {
         if ($operation === 'request') {
-            DomainService::recordTransferRequest($name, $registrant, [], $authinfo);
+            DomainService::recordTransferRequest($name, $registrant === '' ? null : $registrant, $scope->resellerId, [], $authinfo);
             // what the reseller's daily quota counts, as the API writes it
             History::record('domains', 0, 'request', ['domain' => $name, 'kind' => 'transfer'], $scope->userId);
             return;

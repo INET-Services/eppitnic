@@ -55,9 +55,9 @@ final class PollDrainCommand extends Command
             while ($session->pollMessageCount() > 0) {
                 $id = $session->pollID();
 
-                // poll 'req' stores the message; 'ack' removes it from the
-                // registry's queue and uncovers the next
-                if ( ! $session->poll(true, 'req', $id)) {
+                // poll 'req' stores the message (the registry refuses an id on
+                // it); 'ack' removes it from the queue and uncovers the next
+                if ( ! $session->poll(true, 'req')) {
                     $this->failures++;
                     $this->warn("message {$id}: " . $session->getError());
                     return;

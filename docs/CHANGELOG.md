@@ -74,6 +74,22 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   `transfer` (`status`, `requested_at`, the `ns` to apply; `null` otherwise).
   If the registry cannot answer, it returns the `transfers` row as `stale`
   instead of `404`. `.../transfer/cancel` uses the stored code when given none.
+- Completing a transfer-in stores the registrant copy the registry gives the
+  gaining registrar under a new handle, owned by the reseller that requested
+  the transfer. If that fails, the next poll run tries again.
+- `POST /v1/domains` follows its input, not the registry's `check`: without
+  `authinfo` it registers (`registrant` is required), with one it requests a
+  transfer, and with a `registrant` too a transfer-trade, which changes the
+  domain's registrant. A check that disagrees is a `400`: "'x.it' is not
+  registered; leave the AuthInfo code empty to register it" or "'x.it' is
+  already registered; give its AuthInfo code to transfer it". A transfer of a
+  name another reseller holds is a `403`.
+- `POST /v1/domains/{name}/transfer` takes an optional `registrant`: without
+  it a plain transfer, with it a transfer-trade. A plain transfer belongs to
+  the requester's reseller, a trade to the registrant's. `kind` (`transfer` or
+  `trade`) is in `transfer` of `GET /v1/domains/{name}` and in the rows of
+  `GET /v1/domains/transfers`, whose `name` and `email` are `null` for a plain
+  transfer.
 
 ### Users and sessions
 
@@ -232,6 +248,15 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
 - `passkey purge` deletes expired WebAuthn challenges; `passkey metadata`
   fetches and verifies the FIDO MDS3 BLOB, or imports one with `--file=`
   (exit code `80`: not fetched, `81`: refused).
+- `domain transfer request` takes `--registrant` optionally: without it a plain
+  transfer, with it a transfer-trade to that registrant.
+- `domain create` only registers: `--authinfo` is the code set on the new
+  domain, and a name the registry already holds is refused with a hint to use
+  `domain transfer request`.
+- `domain info --store` first stores a registrant not stored yet, for `--user`'s
+  reseller; if that fails the domain is not stored (exit code `21`).
+- `poll drain` reads each message with a plain `req` and names the id only when
+  acknowledging it. A poll request the registry refuses stores no message.
 - `config epp-password` takes the password as `<new-password>`,
   `--password-stdin` or, at a terminal, a hidden prompt asked twice.
 - `contact cleanup` clears `admin` and `tech` on domains, then deletes the
@@ -248,7 +273,9 @@ Schema `070100`, applied automatically:
 - New columns `users.token_lifetime`, `resellers.entitytype`,
   `resellers.dnssec_algorithm` and `resellers.dnssec_digesttype`.
 - New tables `password_resets` and `password_reset_attempts`.
-- New column `transfers.authinfo`, the code a transfer-in was requested with.
+- New column `transfers.authinfo`, the code a transfer-in was requested with,
+  and `transfers.kind` (`transfer` or `trade`; existing rows are `transfer`).
+  `transfers.registrant` may be NULL: a plain transfer has none.
 - Passkeys: new columns `users.signin_requirement`,
   `users.passkey_enroll_open` and `users.webauthn_handle`; new tables `passkeys`, `webauthn_challenges` and
   `authenticator_metadata`; the settings `passkeys`, `passkey_challenge_purge`,

@@ -2,6 +2,7 @@
 
 namespace Eppitnic\Tests\Unit;
 
+use Eppitnic\Persistence\Scope;
 use Eppitnic\Service\DomainService;
 use Eppitnic\Tests\Support\CommandCatalog;
 use Eppitnic\Tests\Support\EppTestCase;
@@ -66,7 +67,7 @@ final class ContactRefreshTest extends EppTestCase
     }
 
     private function params(): array {
-        return ['domain' => 'example-one.it', 'registrant' => 'ABCD1234EFGH5678', 'authinfo' => 'SECRET1234567890'];
+        return ['domain' => 'example-one.it', 'registrant' => 'ABCD1234EFGH5678'];
     }
 
     private function storedStatus(): array {
@@ -76,7 +77,7 @@ final class ContactRefreshTest extends EppTestCase
     public function testACreatedDomainRefreshesItsRegistrantsStoredStatus(): void {
         $this->registry($this->contactInfo);
 
-        $result = DomainService::createOrTransfer($this->nic, $this->params(), 5);
+        $result = DomainService::createOrTransfer($this->nic, $this->params(), Scope::operator(5));
 
         $this->assertTrue($result['ok'], $result['error'] ?? '');
         $this->assertSame(['ok', 'linked'], $this->storedStatus());
@@ -86,7 +87,7 @@ final class ContactRefreshTest extends EppTestCase
         $this->registry(CommandCatalog::loginRefusal('2303', 'Object does not exist', '', 'gone'));
         ini_set('error_log', '/dev/null');
 
-        $result = DomainService::createOrTransfer($this->nic, $this->params(), 5);
+        $result = DomainService::createOrTransfer($this->nic, $this->params(), Scope::operator(5));
 
         $this->assertTrue($result['ok'], $result['error'] ?? '');
         $this->assertSame(1, (int) R::getCell("SELECT COUNT(*) FROM domains WHERE domain = 'example-one.it'"));

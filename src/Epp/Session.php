@@ -245,8 +245,8 @@ class Session extends AbstractObject
       $this->msgID = (int)$this->xmlResult->response->msgQ->attributes()->id;
       $this->msgTitle = (string)$this->xmlResult->response->msgQ->msg;
 
-      // parse message (only in case of a poll "req") and store it
-      if ((strtolower($type) == "req") && ($store === TRUE)) {
+      // parse message (only in case of a poll "req" that succeeded) and store it
+      if ((strtolower($type) == "req") && ($store === TRUE) && $qrs) {
         $parsed = $this->parsePollReq();
         R::exec("
           INSERT INTO messages (cl_trid, sv_trid, type, domain, ac_id, re_id, data)

@@ -5,6 +5,7 @@ namespace Eppitnic\Cli\Command;
 use Eppitnic\Cli\Command;
 use Eppitnic\Cli\UsageError;
 use Eppitnic\Epp\Domain;
+use Eppitnic\Service\ContactRefresh;
 use Eppitnic\Service\DomainService;
 
 /**
@@ -42,8 +43,9 @@ final class DomainInfoCommand extends Command
         $authinfo = (string) $this->option('authinfo', '');
         $store = $this->hasOption('store');
         $userId = $this->userId();
+        $resellerId = $store ? $this->scope()->resellerId : 0;
 
-        $this->withSession(function ($nic) use ($names, $authinfo, $contacts, $store, $userId) {
+        $this->withSession(function ($nic) use ($names, $authinfo, $contacts, $store, $userId, $resellerId) {
             foreach ($names as $name) {
                 // a fresh object per domain: fetch() re-initialises, but
                 // reusing one across names has bitten this codebase before
@@ -74,7 +76,13 @@ final class DomainInfoCommand extends Command
                 $this->record($this->render($record), $record);
 
                 if ($store) {
-                    if ($domain->storeDB($userId)) {
+                    // domains.registrant is a foreign key onto contacts
+                    $registrant = (string) $domain->get('registrant');
+                    $missing = ContactRefresh::storeMissing($nic, $registrant, $resellerId, $userId);
+                    if ($missing !== null) {
+                        $this->failures++;
+                        $this->warn("{$name}: not stored, registrant '{$registrant}' could not be stored ({$missing})");
+                    } elseif ($domain->storeDB($userId)) {
                         $this->line('  stored locally');
                     } else {
                         $this->failures++;

@@ -4,17 +4,18 @@ namespace Eppitnic\Cli\Command;
 
 use Eppitnic\Cli\Command;
 use Eppitnic\Cli\UsageError;
+use Eppitnic\Persistence\Scope;
 use Eppitnic\Service\DomainService;
 
 /**
- * Register domains, or request a transfer for any held elsewhere -- the
- * registry's answer decides, not the caller: a name somebody else holds becomes
- * a transfer request rather than an error. Shared with POST /v1/domains.
+ * Register domains. A name already registered is refused: `domain transfer
+ * request` takes it over. Shared with POST /v1/domains, whose AuthInfo asks for
+ * a transfer instead.
  */
 final class DomainCreateCommand extends Command
 {
     public function describe(): string {
-        return 'register domains, or request a transfer if already held';
+        return 'register domains';
     }
 
     public function arguments(): string {
@@ -29,7 +30,7 @@ final class DomainCreateCommand extends Command
             'tech='       => 'ignored: the registry no longer has technical contacts',
             'ns='         => 'nameservers, colon-separated -- 2 to 6 (required)',
             'glue='       => "glue addresses, 'HOST=IPV4[,IPV6]' separated by ';' -- only for a nameserver under the domain, which needs the IPv4",
-            'authinfo='   => 'authinfo code (generated when omitted)',
+            'authinfo='   => 'authinfo code set on the new domain (generated when omitted)',
         ] + self::MUTATING_OPTIONS;
     }
 
@@ -51,19 +52,19 @@ final class DomainCreateCommand extends Command
             }
         }
 
-        if ( ! $this->confirm('Register or transfer ' . count($rows) . ' domain(s)? This is a chargeable operation.')) {
+        if ( ! $this->confirm('Register ' . count($rows) . ' domain(s)? This is a chargeable operation.')) {
             $this->line('nothing done');
             return 0;
         }
 
-        $userId = $this->userId();
+        $scope = Scope::operator($this->userId());
         $dryRun = $this->isDryRun();
 
-        $this->withSession(function ($nic) use ($rows, $userId, $dryRun) {
+        $this->withSession(function ($nic) use ($rows, $scope, $dryRun) {
             foreach ($rows as $row) {
                 // a dry run must not write the local row, so persistence is
                 // switched off rather than the result being discarded after
-                $result = DomainService::createOrTransfer($nic, $row, $userId, ! $dryRun);
+                $result = DomainService::createOrTransfer($nic, $row, $scope, ! $dryRun, true);
 
                 if ( ! $result['ok']) {
                     $this->itemFailed($row['domain'], $result['error']);

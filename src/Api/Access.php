@@ -58,7 +58,7 @@ final class Access
             $bind[':reseller_id'] = $scope->resellerId;
         }
         return R::getRow("
-            SELECT domain, registrant, authinfo, dns, status, time
+            SELECT domain, registrant, authinfo, dns, kind, status, time
             FROM transfers WHERE " . implode(' AND ', $where) . "
               AND NOT EXISTS (SELECT 1 FROM domains d WHERE d.domain = transfers.domain AND d.active = 1)", $bind) ?: null;
     }

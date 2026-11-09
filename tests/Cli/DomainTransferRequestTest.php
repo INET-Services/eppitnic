@@ -10,8 +10,9 @@ use Eppitnic\Tests\Support\FakeTransport;
 use RedBeanPHP\R;
 
 /**
- * `domain transfer request` stores the registrant it was given, and refuses
- * before contacting the registry when there is none it may use.
+ * `domain transfer request` is a plain transfer, or with a registrant a
+ * transfer-trade to it; it stores the registrant it was given, and refuses
+ * before contacting the registry when that is not one it may use.
  */
 final class DomainTransferRequestTest extends EppTestCase
 {
@@ -29,7 +30,7 @@ final class DomainTransferRequestTest extends EppTestCase
         R::exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, handle TEXT, reseller_id INTEGER)');
         R::exec('CREATE TABLE users (id INTEGER PRIMARY KEY, reseller_id INTEGER)');
         R::exec('CREATE TABLE transfers (id INTEGER PRIMARY KEY, reseller_id INTEGER, domain TEXT,
-                 registrant TEXT NOT NULL, authinfo TEXT, techc TEXT, dns TEXT,
+                 registrant TEXT, authinfo TEXT, kind TEXT NOT NULL DEFAULT \'transfer\', techc TEXT, dns TEXT,
                  status TEXT NOT NULL DEFAULT \'pending\', time TEXT,
                  attempts INTEGER NOT NULL DEFAULT 0, attempted_at TEXT)');
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -63,7 +64,30 @@ final class DomainTransferRequestTest extends EppTestCase
 
         $row = R::getRow('SELECT * FROM transfers');
         $this->assertSame('MINE1234MINE5678', $row['registrant']);
+        $this->assertSame('trade', $row['kind']);
         $this->assertSame(2, (int) $row['reseller_id']);
+        $this->assertStringContainsString(
+            '<extdom:newRegistrant>MINE1234MINE5678</extdom:newRegistrant>',
+            implode('', $this->sent->requests)
+        );
+    }
+
+    public function testWithoutARegistrantItIsAPlainTransferOfTheUsersReseller(): void {
+        $this->assertSame(0, $this->request(['--authinfo=SECRET1234567890', 'request', 'example-one.it']));
+
+        $row = R::getRow('SELECT * FROM transfers');
+        $this->assertNull($row['registrant']);
+        $this->assertSame('transfer', $row['kind']);
+        $this->assertSame(2, (int) $row['reseller_id'], "--user's reseller");
+        $this->assertSame('SECRET1234567890', $row['authinfo']);
+        $this->assertStringContainsString('<transfer op="request">', implode('', $this->sent->requests));
+        $this->assertStringNotContainsString('newRegistrant', implode('', $this->sent->requests));
+    }
+
+    public function testAFileRowCarriesNoRegistrantForAPlainTransfer(): void {
+        $this->request(['request', 'example-one.it;SECRET1234567890']);
+
+        $this->assertSame(['transfer', null], [R::getCell('SELECT kind FROM transfers'), R::getCell('SELECT registrant FROM transfers')]);
     }
 
     public function testTheAuthinfoIsStoredAndAReRequestReplacesIt(): void {
@@ -97,7 +121,6 @@ final class DomainTransferRequestTest extends EppTestCase
     /** @return array<string, array{0: string[], 1: string}> args => message */
     public static function refusals(): array {
         return [
-            'none given'          => [[], 'no registrant'],
             'not a stored contact' => [['--registrant=NOSUCH12NOSUCH34'], 'not a stored contact'],
             'another reseller'    => [['--registrant=THEIR234THEIR678'], 'not yours'],
         ];

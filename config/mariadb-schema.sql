@@ -275,10 +275,13 @@ CREATE TABLE `transfers` (
   `domain`                varchar(255) unique NOT NULL,
   `techc`                 text,
   `dns`                   text,
-  `registrant`            varchar(32) NOT NULL,
+  -- the registrant a transfer-trade changes the domain to (kind 'trade');
+  -- NULL for a plain transfer, which keeps the domain's registrant
+  `registrant`            varchar(32) DEFAULT NULL,
   -- the code the request was made with: it lets the registry answer a query
   -- about a domain another registrar still sponsors
   `authinfo`              varchar(64) DEFAULT NULL,
+  `kind`                  enum('transfer','trade') NOT NULL DEFAULT 'transfer',
   `status`                enum('pending','cancelled') NOT NULL DEFAULT 'pending',
   `time`                  timestamp DEFAULT CURRENT_TIMESTAMP,
   -- nameserver updates the registry refused after the transfer completed

@@ -182,8 +182,8 @@ class PollProcessor
     // 3. INCOMING TRANSFERS -- reconcile every open local transfer request
     $transfers = R::getAll("
       SELECT t.id, t.reseller_id, t.domain, t.dns, t.attempts, t.attempted_at
-      FROM transfers t, contacts c
-      WHERE t.registrant = c.handle AND t.status = 'pending'");
+      FROM transfers t
+      WHERE t.status = 'pending'");
 
     foreach ($transfers as $transfer) {
       $log[] = "verifying '{$transfer['domain']}' (transfer-in)";
@@ -225,6 +225,15 @@ class PollProcessor
 
           if ( ! $this->domain->fetch($transfer['domain'])) {
             $log[] = "  couldn't fetch current domain data, will retry next run: " . $this->domain->getError();
+            break;
+          }
+
+          // the registry hands the gaining registrar a copy of the registrant
+          // under a new handle; domains.registrant is a foreign key onto it
+          $registrant = (string) $this->domain->get('registrant');
+          $storedBy = ContactRefresh::storeMissing($this->client, $registrant, (int) $transfer['reseller_id'], null);
+          if ($storedBy !== null) {
+            $log[] = "  couldn't store registrant '{$registrant}' locally, will retry next run: " . $storedBy;
             break;
           }
 

@@ -26,90 +26,118 @@ use RedBeanPHP\R;
 final class DomainService
 {
     /**
-     * Register a domain, or request its transfer if somebody already has it.
-     * The registry chooses, not the caller: a <check> decides which command is
-     * possible, so "create" on a taken domain requests a transfer instead.
+     * Register a domain, or request its transfer. The caller's input decides:
+     * no AuthInfo registers it (a registrant is required), an AuthInfo asks to
+     * transfer it, and with a registrant too, to trade it to that registrant.
+     * The registry's <check> only guards: it must agree with the input.
+     * $registerOnly is the CLI's `domain create`: always a registration, its
+     * authinfo the new domain's code, and a registered name is refused.
      *
      * @param Client $nic a logged-in client
-     * @param array $params domain, registrant, and optionally ns[], authinfo;
-     *              admin and tech[] are accepted and ignored
-     * @param int $actorId the acting user, for history; the domain belongs
-     *              to its registrant's reseller (Domain::storeDB())
+     * @param array $params domain, and optionally registrant (required
+     *              without authinfo), ns[] and authinfo; admin and tech[] are
+     *              accepted and ignored
+     * @param Scope $scope who acts: the user for history, and the reseller a
+     *              plain transfer belongs to (a registered domain and a trade
+     *              belong to their registrant's, see Domain::storeDB())
      * @param bool $persist write the result to the local database: a
      *              registration as a domain, a transfer as a pending row in
-     *              `transfers` (registrant stored locally first)
+     *              `transfers` (a trade's registrant stored locally first).
+     *              False is a dry run, whose <check> is not the registry's
+     *              and so guards nothing
+     * @param bool $registerOnly never transfer: authinfo is the code to set
+     *              on the new domain, not the one of a domain to take over
      * @return array{ok: bool, action?: string, domain?: Domain, error?: string, warnings?: string[]}
+     *         action is created, transfer-requested or trade-requested
      */
-    public static function createOrTransfer(Client $nic, array $params, int $actorId, bool $persist = true): array {
-        $nameservers = self::checkedNameservers($params['domain'], $params['ns'] ?? []);
+    public static function createOrTransfer(Client $nic, array $params, Scope $scope, bool $persist = true, bool $registerOnly = false): array {
+        $name = $params['domain'];
+        $authinfo = trim((string) ($params['authinfo'] ?? ''));
+        $registrant = trim((string) ($params['registrant'] ?? ''));
+        $transfer = ! $registerOnly && $authinfo !== '';
+
+        if ( ! $transfer && $registrant === '') {
+            return ['ok' => false, 'error' => "A registrant is required to register '{$name}'"];
+        }
+
+        $nameservers = self::checkedNameservers($name, $params['ns'] ?? []);
         if (is_string($nameservers)) {
             return ['ok' => false, 'error' => $nameservers];
         }
 
         $domain = new Domain($nic);
-        $availability = $domain->check($params['domain']);
+        $availability = $domain->check($name);
         if ( ! $availability->answered()) {
-            // the availability question was never answered, so neither command
-            // can be chosen -- create() would collide, transfer() would fail
+            // without the answer the input cannot be checked against the registry
             return ['ok' => false, 'error' => $availability->error()];
+        }
+        if ($persist && $transfer && $availability->available()) {
+            return ['ok' => false, 'error' => "'{$name}' is not registered; leave the AuthInfo code empty to register it"];
+        }
+        if ($persist && ! $transfer && ! $availability->available()) {
+            $hint = $registerOnly ? 'use `domain transfer request` to transfer it' : 'give its AuthInfo code to transfer it';
+            return ['ok' => false, 'error' => "'{$name}' is already registered; {$hint}"];
         }
 
         // transfers.registrant is a foreign key onto contacts: refused before
         // the registry is asked, which would otherwise take a request we
         // cannot record
-        if ($persist && ! $availability->available()
-            && (int) R::getCell('SELECT COUNT(*) FROM contacts WHERE handle = ?', [$params['registrant']]) === 0) {
-            return ['ok' => false, 'error' => "Contact '{$params['registrant']}' not found"];
+        if ($persist && $transfer && $registrant !== ''
+            && (int) R::getCell('SELECT COUNT(*) FROM contacts WHERE handle = ?', [$registrant]) === 0) {
+            return ['ok' => false, 'error' => "Contact '{$registrant}' not found"];
         }
 
-        $domain->set('domain', $params['domain']);
-        $domain->set('registrant', $params['registrant']);
+        $domain->set('domain', $name);
+        if ($registrant !== '') {
+            $domain->set('registrant', $registrant);
+        }
         foreach ($nameservers as $ns) {
             if ($domain->addNS($ns['name'], $ns['ip']) === false) {
                 return ['ok' => false, 'error' => $domain->getError()];
             }
         }
-        $domain->set('authinfo', $params['authinfo'] ?? $domain->authinfo());
+        $domain->set('authinfo', $authinfo !== '' ? $authinfo : $domain->authinfo());
         $warnings = [];
 
-        if ($availability->available()) {
+        if ( ! $transfer) {
             // prepared first, so the registry's DNS check finds it answering;
             // never on a dry run, which persists nothing
-            $zone = $persist ? PowerDnsZones::provision($params['domain'], array_keys((array) $domain->get('ns'))) : null;
+            $zone = $persist ? PowerDnsZones::provision($name, array_keys((array) $domain->get('ns'))) : null;
             if ($zone !== null && $zone['warning'] !== null) {
                 $warnings[] = $zone['warning'];
             }
             if ( ! $domain->create()) {
                 if ($zone !== null) {
-                    PowerDnsZones::undo($params['domain'], $zone, []);
+                    PowerDnsZones::undo($name, $zone, []);
                 }
                 return ['ok' => false, 'error' => $domain->getError()];
             }
             $action = 'created';
         } else {
-            if ( ! $domain->transfer($params['domain'], $domain->get('authinfo'))) {
+            if ( ! $domain->transfer($name, $authinfo, $registrant)) {
                 return ['ok' => false, 'error' => $domain->getError()];
             }
-            $action = 'transfer-requested';
+            $action = $registrant === '' ? 'transfer-requested' : 'trade-requested';
         }
 
         if ($persist && $action === 'created') {
-            if ( ! $domain->storeDB($actorId)) {
-                $warnings[] = Warnings::localWrite("domain '{$params['domain']}'", $domain->getError());
+            if ( ! $domain->storeDB($scope->userId)) {
+                $warnings[] = Warnings::localWrite("domain '{$name}'", $domain->getError());
             }
             // the registrant is linked now
-            ContactRefresh::run($nic, [$params['registrant']], $actorId);
+            ContactRefresh::run($nic, [$registrant], $scope->userId);
         } elseif ($persist) {
             // not ours until PollProcessor sees the transfer complete
             try {
                 self::recordTransferRequest(
-                    $params['domain'],
-                    $params['registrant'],
+                    $name,
+                    $registrant === '' ? null : $registrant,
+                    $scope->resellerId,
                     $nameservers,
-                    $domain->get('authinfo')
+                    $authinfo
                 );
             } catch (\Throwable $e) {
-                $warnings[] = Warnings::localWrite("transfer of '{$params['domain']}'", $e->getMessage());
+                $warnings[] = Warnings::localWrite("transfer of '{$name}'", $e->getMessage());
             }
         }
 
@@ -118,17 +146,23 @@ final class DomainService
 
     /**
      * Record a transfer-in request as pending, for PollProcessor to complete.
-     * It belongs to its registrant's reseller. `transfers.domain` is unique,
-     * so an earlier row for the name (a cancelled request) is replaced.
+     * With a registrant it is a trade, belonging to that registrant's
+     * reseller; without, a plain transfer, belonging to the requester's.
+     * `transfers.domain` is unique, so an earlier row for the name (a
+     * cancelled request) is replaced.
      *
+     * @param string|null $registrant the registrant the domain changes to, if
+     *              any: a stored contact
+     * @param int $requesterReseller the requesting user's reseller
      * @param array $ns nameservers to apply: nameserverEntries() output or names
      * @param string|null $authinfo the code the request was made with: the
      *              registry answers a query about the domain only with it
      */
-    public static function recordTransferRequest(string $name, string $registrant, array $ns = [], ?string $authinfo = null): void {
+    public static function recordTransferRequest(string $name, ?string $registrant, int $requesterReseller, array $ns = [], ?string $authinfo = null): void {
         $values = [
-            ':reseller_id' => Domain::resellerOf($registrant),
+            ':reseller_id' => $registrant === null ? $requesterReseller : Domain::resellerOf($registrant),
             ':registrant'  => $registrant,
+            ':kind'        => $registrant === null ? 'transfer' : 'trade',
             ':authinfo'    => $authinfo,
             ':techc'       => serialize([]),
             // a name alone when it carries no addresses
@@ -140,7 +174,7 @@ final class DomainService
         ];
         if (R::getCell('SELECT id FROM transfers WHERE domain = ?', [$name])) {
             R::exec("
-                UPDATE transfers SET reseller_id = :reseller_id, registrant = :registrant,
+                UPDATE transfers SET reseller_id = :reseller_id, registrant = :registrant, kind = :kind,
                     authinfo = :authinfo, techc = :techc, dns = :dns, status = 'pending', time = CURRENT_TIMESTAMP,
                     attempts = 0, attempted_at = NULL
                 WHERE domain = :domain
@@ -148,8 +182,8 @@ final class DomainService
             return;
         }
         R::exec("
-            INSERT INTO transfers (reseller_id, domain, registrant, authinfo, techc, dns)
-            VALUES (:reseller_id, :domain, :registrant, :authinfo, :techc, :dns)
+            INSERT INTO transfers (reseller_id, domain, registrant, kind, authinfo, techc, dns)
+            VALUES (:reseller_id, :domain, :registrant, :kind, :authinfo, :techc, :dns)
         ", $values);
     }
 

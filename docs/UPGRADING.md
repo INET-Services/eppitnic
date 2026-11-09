@@ -77,6 +77,16 @@ upgrades itself (`070000` to `070100`) on the first connection. Then:
    `passkey` or `signin_reset` (see "Forced password change and MFA
    enrollment" in [API.md](API.md)).
 
+   A `registrant` on a transfer request now changes the domain's registrant (a
+   transfer-trade); it used to only name the contact the request belonged to.
+   Leave it out for a plain transfer, in `POST /v1/domains/{name}/transfer`
+   and in `domain transfer request --registrant`. `POST /v1/domains` follows
+   its input: no `authinfo` registers (and needs a `registrant`), an
+   `authinfo` requests a transfer. Sending one for a free name, or none for a
+   taken name, is a `400`. `domain create` only registers, its `--authinfo`
+   being the new domain's code, and refuses a registered name: use `domain
+   transfer request`.
+
 ## From 6.x to 7.0
 
 Upgrading a 6.x installation to 7.0 converts `config.xml`, migrates the

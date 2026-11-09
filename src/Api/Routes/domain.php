@@ -41,13 +41,14 @@ function domainToArray(Domain $domain): array {
 }
 
 /**
- * A transfer-in request as GET /v1/domains/{name} reports it: its status, when
- * it was asked (the server's local time) and the nameservers to apply once it
- * completes.
+ * A transfer-in request as GET /v1/domains/{name} reports it: its status and
+ * kind (transfer or trade), when it was asked (the server's local time) and
+ * the nameservers to apply once it completes.
  */
 function transferToArray(array $row): array {
     return [
         'status'       => $row['status'],
+        'kind'         => $row['kind'],
         'requested_at' => $row['time'],
         'ns'           => DomainService::requestedNameserverList(SerializedColumn::toArray($row['dns'])),
     ];
@@ -202,7 +203,7 @@ $app->get('/v1/domains/transfers', function (Request $request, Response $respons
 
     // scoped by the requesting reseller (transfers.reseller_id), matching the
     // transfer/cancel authorization check
-    $where = ['t.registrant = c.handle'];
+    $where = ['1 = 1'];
     $bind = [];
     if ($registrant !== '') {
         $where[] = 't.registrant = :registrant';
@@ -214,8 +215,8 @@ $app->get('/v1/domains/transfers', function (Request $request, Response $respons
     }
 
     $rows = R::getAll("
-        SELECT t.id, t.domain, t.status, t.techc, t.dns, t.reseller_id, c.name, c.email
-        FROM transfers t, contacts c
+        SELECT t.id, t.domain, t.status, t.kind, t.techc, t.dns, t.reseller_id, c.name, c.email
+        FROM transfers t LEFT JOIN contacts c ON c.handle = t.registrant
         WHERE " . implode(' AND ', $where), $bind);
 
     $transfers = array_map(function ($row) {
@@ -284,7 +285,11 @@ $app->post('/v1/domains', function (Request $request, Response $response, array 
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
     $params = $request->getParsedBody() ?? [];
 
-    if ($err = Validate::requireFields($params, ['domain', 'registrant']) ?? Validate::maxLength($params, Validate::DOMAIN_FIELD_MAX_LENGTHS)) {
+    // an AuthInfo asks for a transfer, which keeps the registrant unless one is given
+    $authinfo = trim((string) ($params['authinfo'] ?? ''));
+    $registrant = trim((string) ($params['registrant'] ?? ''));
+    $required = $authinfo === '' ? ['domain', 'registrant'] : ['domain'];
+    if ($err = Validate::requireFields($params, $required) ?? Validate::maxLength($params, Validate::DOMAIN_FIELD_MAX_LENGTHS)) {
         return Json::response($response, ['error' => $err], 400);
     }
     if ( ! Validate::isDomain($params['domain'])) {
@@ -293,8 +298,12 @@ $app->post('/v1/domains', function (Request $request, Response $response, array 
     if (is_string($error = DomainService::checkedNameservers($params['domain'], $params['ns'] ?? []))) {
         return Json::response($response, ['error' => $error], 400);
     }
-    if ( ! Access::canUseAsRegistrant($params['registrant'], $scope)) {
-        return Json::response($response, ['error' => "Contact '{$params['registrant']}' is not yours to use as registrant"], 403);
+    if ($registrant !== '' && ! Access::canUseAsRegistrant($registrant, $scope)) {
+        return Json::response($response, ['error' => "Contact '{$registrant}' is not yours to use as registrant"], 403);
+    }
+    // a transfer claims a domain, so it must not pull one from another reseller
+    if ($authinfo !== '' && Access::domainHeldByAnotherReseller($params['domain'], $scope)) {
+        return domainForbidden($response, $params['domain']);
     }
     if ( ! Access::withinQuota($scope)) {
         return Json::response($response, ['error' => 'Daily operation quota exceeded'], 429);
@@ -302,7 +311,7 @@ $app->post('/v1/domains', function (Request $request, Response $response, array 
 
     try {
         $result = EppSession::run(
-            fn($nic) => DomainService::createOrTransfer($nic, $params, $scope->userId),
+            fn($nic) => DomainService::createOrTransfer($nic, $params, $scope),
             $debug
         );
     } catch (\RuntimeException $e) {
@@ -715,15 +724,13 @@ $app->post('/v1/domains/{name}/transfer', function (Request $request, Response $
     if (empty($params['authinfo'])) {
         return Json::response($response, ['error' => 'authinfo is required'], 400);
     }
-    $registrant = (string) ($params['registrant'] ?? '');
-    if ($registrant === '') {
-        return Json::response($response, ['error' => 'registrant is required'], 400);
-    }
-    if ( ! Access::canUseAsRegistrant($registrant, $scope)) {
+    // a registrant makes it a transfer-trade; without, the domain keeps its own
+    $registrant = trim((string) ($params['registrant'] ?? ''));
+    if ($registrant !== '' && ! Access::canUseAsRegistrant($registrant, $scope)) {
         return Json::response($response, ['error' => "Contact '{$registrant}' is not yours to use as registrant"], 403);
     }
     // transfers.registrant is a foreign key onto contacts
-    if ((int) R::getCell('SELECT COUNT(*) FROM contacts WHERE handle = ?', [$registrant]) === 0) {
+    if ($registrant !== '' && (int) R::getCell('SELECT COUNT(*) FROM contacts WHERE handle = ?', [$registrant]) === 0) {
         return Json::response($response, ['error' => "Contact '{$registrant}' not found"], 404);
     }
     if ( ! Access::withinQuota($scope)) {
@@ -734,13 +741,19 @@ $app->post('/v1/domains/{name}/transfer', function (Request $request, Response $
         return Json::response($response, ['error' => $nameservers], 400);
     }
     try {
-        $result = EppSession::run(function ($nic) use ($name, $params, $registrant, $nameservers) {
+        $result = EppSession::run(function ($nic) use ($name, $params, $registrant, $nameservers, $scope) {
             $domain = new Domain($nic);
-            if ( ! $domain->transfer($name, $params['authinfo'])) {
+            if ( ! $domain->transfer($name, $params['authinfo'], $registrant)) {
                 return ['ok' => false, 'error' => $domain->getError()];
             }
 
-            DomainService::recordTransferRequest($name, $registrant, $nameservers, $params['authinfo']);
+            DomainService::recordTransferRequest(
+                $name,
+                $registrant === '' ? null : $registrant,
+                $scope->resellerId,
+                $nameservers,
+                $params['authinfo']
+            );
             return ['ok' => true];
         }, $debug);
     } catch (\RuntimeException $e) {

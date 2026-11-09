@@ -591,10 +591,10 @@ class Contact extends AbstractObject
    * contact - `active`, so an import does not resurrect a deactivation
    *
    * @param int $resellerId who owns a newly created row (existing ones keep theirs)
-   * @param int $actorId the acting user, for history
+   * @param int|null $actorId the acting user, for history (null: a job)
    * @return bool status
    */
-  public function storeDB(int $resellerId, int $actorId): bool {
+  public function storeDB(int $resellerId, ?int $actorId): bool {
     $data = ['status' => serialize($this->status)];
     foreach (self::FIELDS as $field) {
       $data[$field] = $this->$field;
@@ -613,7 +613,7 @@ class Contact extends AbstractObject
       // unscoped: an upsert is not a scoped write. $resellerId says who owns
       // a *new* row, not who may touch an existing one -- the two fields left
       // out of $data above are exactly the ones that would move.
-      if ( ! $this->storageUpdate($this->handle, $data, Scope::operator($actorId))) {
+      if ( ! $this->storageUpdate($this->handle, $data, Scope::operator((int) $actorId))) {
         return FALSE;
       }
     }

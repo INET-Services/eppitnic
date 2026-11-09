@@ -7,7 +7,9 @@
 -- users.email widened to 256 and unique, the password-reset tables, and
 -- passkeys: users.signin_requirement and its companions, the passkeys,
 -- webauthn_challenges and authenticator_metadata tables, and their settings,
--- and transfers.authinfo, the code a transfer-in was requested with
+-- and transfers.authinfo, the code a transfer-in was requested with,
+-- transfers.kind (transfer or trade) and a nullable transfers.registrant (NULL:
+-- a plain transfer)
 -- ============================================================================
 
 ALTER TABLE `resellers`
@@ -146,6 +148,11 @@ INSERT IGNORE INTO `settings` (`key`, `value`) VALUES
 
 ALTER TABLE `transfers`
   ADD COLUMN IF NOT EXISTS `authinfo` varchar(64) DEFAULT NULL AFTER `registrant`;
+
+-- existing rows are plain transfers (the default); registrant keeps its foreign key
+ALTER TABLE `transfers`
+  ADD COLUMN IF NOT EXISTS `kind` enum('transfer','trade') NOT NULL DEFAULT 'transfer' AFTER `authinfo`,
+  MODIFY COLUMN `registrant` varchar(32) NULL;
 
 INSERT INTO `settings` (`key`, `value`) VALUES
   ('schema_version', '"070100"')

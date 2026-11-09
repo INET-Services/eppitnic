@@ -15,8 +15,8 @@ use Slim\Factory\AppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 
 /**
- * POST /v1/domains/{name}/transfer needs a registrant, and .../restore talks
- * to the epp.server_deleted host.
+ * POST /v1/domains/{name}/transfer is a plain transfer, or a transfer-trade
+ * with a registrant, and .../restore talks to the epp.server_deleted host.
  */
 // domain.php declares functions: each test loads it in a process of its own
 #[\PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses]
@@ -40,12 +40,12 @@ final class DomainTransferRestoreRouteTest extends EppTestCase
         R::exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, handle TEXT, reseller_id INTEGER, name TEXT, email TEXT)');
         R::exec('CREATE TABLE domains (id INTEGER PRIMARY KEY, domain TEXT, reseller_id INTEGER, active INTEGER DEFAULT 1)');
         R::exec('CREATE TABLE transfers (id INTEGER PRIMARY KEY, reseller_id INTEGER, domain TEXT,
-                 registrant TEXT NOT NULL, authinfo TEXT, techc TEXT, dns TEXT,
+                 registrant TEXT, authinfo TEXT, kind TEXT NOT NULL DEFAULT \'transfer\', techc TEXT, dns TEXT,
                  status TEXT NOT NULL DEFAULT \'pending\', time TEXT,
                  attempts INTEGER NOT NULL DEFAULT 0, attempted_at TEXT)');
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
                  user_id INTEGER, object TEXT, object_id INTEGER, action TEXT, network TEXT, data TEXT)');
-        R::exec("INSERT INTO contacts (handle, reseller_id) VALUES ('MINE1234MINE5678', 2)");
+        R::exec("INSERT INTO contacts (handle, reseller_id) VALUES ('MINE1234MINE5678', 2), ('THEIR234THEIR678', 3)");
         R::exec("INSERT INTO domains (domain, reseller_id) VALUES ('ours.it', 2)");
 
         $this->byServer = [];
@@ -107,15 +107,31 @@ final class DomainTransferRestoreRouteTest extends EppTestCase
         return $this->call('GET', $path);
     }
 
-    public function testTransferWithoutARegistrantIs400AndSendsNothing(): void {
+    private function lastSession(): string {
+        return implode('', $this->byServer[array_key_first($this->byServer)]->requests);
+    }
+
+    public function testTransferWithoutARegistrantIsAPlainTransferOfTheRequestersReseller(): void {
         $response = $this->post('/v1/domains/new.it/transfer', ['authinfo' => 'SECRET1234567890']);
+
+        $this->assertSame(201, $response->getStatusCode());
+        $row = R::getRow('SELECT * FROM transfers');
+        $this->assertNull($row['registrant']);
+        $this->assertSame('transfer', $row['kind']);
+        $this->assertSame(2, (int) $row['reseller_id']);
+        $this->assertStringContainsString('<transfer op="request">', $this->lastSession());
+        $this->assertStringNotContainsString('newRegistrant', $this->lastSession());
+    }
+
+    public function testTransferWithoutAnAuthinfoIs400AndSendsNothing(): void {
+        $response = $this->post('/v1/domains/new.it/transfer', ['registrant' => 'MINE1234MINE5678']);
 
         $this->assertSame(400, $response->getStatusCode());
         $this->assertSame([], $this->byServer);
         $this->assertSame(0, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
     }
 
-    public function testTransferStoresTheRegistrant(): void {
+    public function testTransferStoresTheRegistrantAsATrade(): void {
         $response = $this->post('/v1/domains/new.it/transfer', [
             'authinfo' => 'SECRET1234567890', 'registrant' => 'MINE1234MINE5678',
         ]);
@@ -123,7 +139,38 @@ final class DomainTransferRestoreRouteTest extends EppTestCase
         $this->assertSame(201, $response->getStatusCode());
         $row = R::getRow('SELECT * FROM transfers');
         $this->assertSame('MINE1234MINE5678', $row['registrant']);
+        $this->assertSame('trade', $row['kind']);
         $this->assertSame(2, (int) $row['reseller_id']);
+        $this->assertStringContainsString('<extdom:newRegistrant>MINE1234MINE5678</extdom:newRegistrant>', $this->lastSession());
+    }
+
+    public function testARegistrantOfAnotherResellerIs403AndSendsNothing(): void {
+        $response = $this->post('/v1/domains/new.it/transfer', [
+            'authinfo' => 'SECRET1234567890', 'registrant' => 'THEIR234THEIR678',
+        ]);
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertSame([], $this->byServer);
+        $this->assertSame(0, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
+    }
+
+    public function testAPlainRequestReplacesATradeRow(): void {
+        $this->post('/v1/domains/new.it/transfer', ['authinfo' => 'SECRET1234567890', 'registrant' => 'MINE1234MINE5678']);
+        R::exec("UPDATE transfers SET status = 'cancelled'");
+
+        $this->post('/v1/domains/new.it/transfer', ['authinfo' => 'SECRET1234567890']);
+
+        $row = R::getRow('SELECT registrant, kind, status FROM transfers');
+        $this->assertSame([null, 'transfer', 'pending'], [$row['registrant'], $row['kind'], $row['status']]);
+    }
+
+    public function testAnotherResellersDomainIs403AndSendsNothing(): void {
+        R::exec("INSERT INTO domains (domain, reseller_id) VALUES ('theirs.it', 3)");
+
+        $response = $this->post('/v1/domains/theirs.it/transfer', ['authinfo' => 'SECRET1234567890']);
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertSame([], $this->byServer);
     }
 
     public function testTransferStoresTheAuthinfoAndAReRequestReplacesIt(): void {
@@ -196,6 +243,27 @@ final class DomainTransferRestoreRouteTest extends EppTestCase
         $this->assertSame(200, $response->getStatusCode());
         $rows = json_decode((string) $response->getBody(), true)['transfers'];
         $this->assertSame(['cancelled'], array_column($rows, 'status'));
+    }
+
+    public function testTheTransfersListShowsAPlainTransferWithoutARegistrant(): void {
+        $this->post('/v1/domains/plain.it/transfer', ['authinfo' => 'SECRET1234567890']);
+        $this->post('/v1/domains/traded.it/transfer', ['authinfo' => 'SECRET1234567890', 'registrant' => 'MINE1234MINE5678']);
+        R::exec("UPDATE contacts SET name = 'Mario Rossi', email = 'mario@example.it' WHERE handle = 'MINE1234MINE5678'");
+
+        $rows = json_decode((string) $this->get('/v1/domains/transfers')->getBody(), true)['transfers'];
+
+        $byDomain = array_column($rows, null, 'domain');
+        $this->assertSame(['transfer', null, null], [$byDomain['plain.it']['kind'], $byDomain['plain.it']['name'], $byDomain['plain.it']['email']]);
+        $this->assertSame(['trade', 'Mario Rossi', 'mario@example.it'], [$byDomain['traded.it']['kind'], $byDomain['traded.it']['name'], $byDomain['traded.it']['email']]);
+    }
+
+    public function testTheTransfersListFiltersByRegistrant(): void {
+        $this->post('/v1/domains/plain.it/transfer', ['authinfo' => 'SECRET1234567890']);
+        $this->post('/v1/domains/traded.it/transfer', ['authinfo' => 'SECRET1234567890', 'registrant' => 'MINE1234MINE5678']);
+
+        $rows = json_decode((string) $this->get('/v1/domains/transfers?registrant=MINE1234MINE5678')->getBody(), true)['transfers'];
+
+        $this->assertSame(['traded.it'], array_column($rows, 'domain'));
     }
 
     public function testRestoreReachesTheServerDeletedHost(): void {

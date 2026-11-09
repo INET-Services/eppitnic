@@ -77,6 +77,17 @@ final class CreateTransferCommandTest extends EppTestCase
         ), 'the authinfo used characters outside the safe set');
     }
 
+    /** `domain create` only registers: its authinfo is the new domain's code */
+    public function testCreateSetsTheGivenAuthinfoOnTheNewDomain(): void {
+        $output = $this->preview(new DomainCreateCommand([
+            '--dry-run', '--registrant=REGI1234REGI5678', '--authinfo=SECRET1234567890', 'example-one.it',
+        ]));
+
+        $this->assertStringContainsString('<domain:create', $output);
+        $this->assertStringContainsString('<domain:pw>SECRET1234567890</domain:pw>', $output);
+        $this->assertStringNotContainsString('<transfer', $output);
+    }
+
     public function testCreateRequiresARegistrant(): void {
         $this->expectException(UsageError::class);
         $this->expectExceptionMessage('no registrant');
@@ -125,10 +136,30 @@ final class CreateTransferCommandTest extends EppTestCase
         (new DomainTransferCommand(['--dry-run', '--registrant=REGI1234REGI5678', 'request', 'example-one.it']))->run();
     }
 
-    public function testTransferRequestRequiresARegistrant(): void {
-        $this->expectException(UsageError::class);
-        $this->expectExceptionMessage('no registrant');
-        (new DomainTransferCommand(['--dry-run', '--authinfo=SECRET1234567890', 'request', 'example-one.it']))->run();
+    public function testTransferRequestWithoutARegistrantIsPlain(): void {
+        $output = $this->preview(new DomainTransferCommand([
+            '--dry-run', '--authinfo=SECRET1234567890', 'request', 'example-one.it',
+        ]));
+
+        $this->assertStringContainsString('<transfer op="request">', $output);
+        $this->assertStringNotContainsString('newRegistrant', $output);
+    }
+
+    public function testTransferRequestWithARegistrantIsATrade(): void {
+        $output = $this->preview(new DomainTransferCommand([
+            '--dry-run', '--authinfo=SECRET1234567890', '--registrant=REGI1234REGI5678', 'request', 'example-one.it',
+        ]));
+
+        $this->assertStringContainsString('<extdom:newRegistrant>REGI1234REGI5678</extdom:newRegistrant>', $output);
+        $this->assertStringContainsString('<domain:pw>SECRET1234567890</domain:pw>', $output);
+    }
+
+    public function testOtherOperationsIgnoreTheRegistrant(): void {
+        $output = $this->preview(new DomainTransferCommand([
+            '--dry-run', '--authinfo=SECRET1234567890', '--registrant=REGI1234REGI5678', 'approve', 'example-one.it',
+        ]));
+
+        $this->assertStringNotContainsString('newRegistrant', $output);
     }
 
     public function testTransferOtherOperationsNeedNoRegistrant(): void {

@@ -78,6 +78,7 @@ final class DoctorOwnershipCommand extends Command
               c.reseller_id        AS registrant_owner_id,
               reg.name             AS registrant_owner_name
             FROM {$table} {$alias}
+            -- a plain transfer has no registrant: nothing to compare
             JOIN contacts c      ON c.handle = {$alias}.registrant
             JOIN resellers owner ON owner.id = {$alias}.reseller_id
             JOIN resellers reg   ON reg.id   = c.reseller_id

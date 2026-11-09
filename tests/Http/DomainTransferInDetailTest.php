@@ -61,7 +61,7 @@ final class DomainTransferInDetailTest extends EppTestCase
                  status TEXT, authinfo TEXT, ns TEXT, registrant TEXT, admin TEXT, tech TEXT,
                  cr_date TEXT, ex_date TEXT, dnssec TEXT, last_invoice TEXT)');
         R::exec("CREATE TABLE transfers (id INTEGER PRIMARY KEY, reseller_id INTEGER, domain TEXT UNIQUE,
-                 registrant TEXT NOT NULL, authinfo TEXT, techc TEXT, dns TEXT,
+                 registrant TEXT, authinfo TEXT, kind TEXT NOT NULL DEFAULT 'transfer', techc TEXT, dns TEXT,
                  status TEXT NOT NULL DEFAULT 'pending', time TEXT,
                  attempts INTEGER NOT NULL DEFAULT 0, attempted_at TEXT)");
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -96,13 +96,14 @@ final class DomainTransferInDetailTest extends EppTestCase
             'reseller_id' => 2,
             'domain'      => $name,
             'registrant'  => 'MINE1234MINE5678',
+            'kind'        => 'trade',
             'authinfo'    => null,
             'dns'         => serialize([['name' => "ns1.{$name}", 'ip' => ['192.0.2.1', '2001:db8::1']], 'ns2.example.net']),
             'status'      => 'pending',
             'time'        => '2026-11-09 10:15:00',
         ];
-        R::exec('INSERT INTO transfers (reseller_id, domain, registrant, authinfo, dns, status, time)
-                 VALUES (:reseller_id, :domain, :registrant, :authinfo, :dns, :status, :time)',
+        R::exec('INSERT INTO transfers (reseller_id, domain, registrant, kind, authinfo, dns, status, time)
+                 VALUES (:reseller_id, :domain, :registrant, :kind, :authinfo, :dns, :status, :time)',
             array_combine(array_map(static fn($k) => ":{$k}", array_keys($values)), $values));
     }
 
@@ -137,6 +138,7 @@ final class DomainTransferInDetailTest extends EppTestCase
 
     private const TRANSFER = [
         'status'       => 'pending',
+        'kind'         => 'trade',
         'requested_at' => '2026-11-09 10:15:00',
         'ns'           => [
             ['name' => 'ns1.incoming.it', 'ipv4' => '192.0.2.1', 'ipv6' => '2001:db8::1'],
@@ -179,6 +181,20 @@ final class DomainTransferInDetailTest extends EppTestCase
             'ex_date'    => null,
         ], $body['domain']);
         $this->assertSame(self::TRANSFER, $body['transfer']);
+    }
+
+    public function testAPlainTransferShowsItsKindAndNoRegistrantWhenTheRegistryCannotAnswer(): void {
+        $this->transferIn('plain.it', ['registrant' => null, 'kind' => 'transfer', 'authinfo' => self::AUTHINFO]);
+        $this->answers = [self::NOT_AUTHORIZED_RESPONSE];
+
+        $response = $this->get('plain.it');
+
+        $this->assertSame(200, $response->getStatusCode());
+        $body = $this->json($response);
+        $this->assertTrue($body['stale']);
+        $this->assertNull($body['domain']['registrant']);
+        $this->assertSame('transfer', $body['transfer']['kind']);
+        $this->assertSame('pending', $body['transfer']['status']);
     }
 
     public function testAnUnreachableRegistryShowsTheLocalRow(): void {
