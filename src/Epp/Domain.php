@@ -366,7 +366,7 @@ class Domain extends AbstractObject
    */
   public function remNS(string $name): string|false {
     // DNS names must be in punycode format (if below an IDN domain)
-    $name = Idn::ascii($name);
+    $name = Idn::ace($name);
     if (isset($this->ns[$name])) {
       unset($this->ns[$name]);
       $this->markChanged('ns');
@@ -411,7 +411,7 @@ class Domain extends AbstractObject
     }
 
     // DNS names must be in punycode format (if below an IDN domain)
-    $name = Idn::ascii($name);
+    $name = Idn::ace($name);
 
     // validated before $this->ns is touched, so a bad address leaves nothing
     // half-added
@@ -633,7 +633,7 @@ class Domain extends AbstractObject
         foreach ($tmp->infNsToValidateData->nsToValidate ?? array() as $set) {
           $hosts = $set->children($ns['domain'] ?? 'urn:ietf:params:xml:ns:domain-1.0');
           foreach ($hosts->hostAttr as $hostAttr) {
-            $name = Idn::ascii((string)$hostAttr->hostName);
+            $name = Idn::ace((string)$hostAttr->hostName);
             $this->nsToValidate[$name]['name'] = $name;
             foreach ($hostAttr->hostAddr as $ip) {
               $address = strtolower(trim((string)$ip));

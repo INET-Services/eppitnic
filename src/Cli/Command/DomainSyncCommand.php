@@ -90,13 +90,13 @@ final class DomainSyncCommand extends Command
                 // the registry may answer in another case or spelling than stored
                 $results = [];
                 foreach ($answer->all() as $answered => $result) {
-                    $results[Idn::ascii(strtolower($answered))] = $result;
+                    $results[Idn::ace($answered)] = $result;
                 }
 
                 foreach ($chunk as $row) {
                     $name = $row['domain'];
 
-                    $result = $results[Idn::ascii(strtolower($name))] ?? null;
+                    $result = $results[Idn::ace($name)] ?? null;
                     if ($result === null) {
                         // unanswered is not "gone"
                         $this->itemFailed($name, 'missing from the availability answer');

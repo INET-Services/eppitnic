@@ -246,7 +246,8 @@ Two differences from the default setup:
 - **Extensions.** The image adds `pdo_mysql` and `intl` to
   `php:8.5-fpm-alpine`, with ICU's full locale data (`icu-data-full`): musl
   has no locale data of its own, so amounts are formatted per
-  `region.lc_monetary` through ICU. Everything else the code uses (`curl`,
+  `region.lc_monetary` through ICU, which also encodes internationalised
+  domain names. Everything else the code uses (`curl`,
   `dom`, `simplexml`, `mbstring`, `posix`, …) ships with the base image. `xsd/` is left out: nothing reads it
   at runtime.
 - **Configuration.** As on bare metal (see "Configuration" in

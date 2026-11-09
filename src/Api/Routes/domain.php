@@ -404,7 +404,7 @@ $app->patch('/v1/domains/{name}', function (Request $request, Response $response
                     if ($domain->addNS($ns['name'], $ns['ip']) === false) {
                         return ['ok' => false, 'status' => 400, 'error' => $domain->getError()];
                     }
-                    $target[] = Idn::ascii($ns['name']);
+                    $target[] = Idn::ace($ns['name']);
                 }
                 foreach (array_diff($current, $target) as $rem) $domain->remNS($rem);
             }

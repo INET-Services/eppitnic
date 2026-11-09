@@ -224,6 +224,13 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
 - Dependencies are on their latest minor releases, among them
   `firebase/php-jwt` 7.2, `phpmailer/phpmailer` 7.2 and `slim/slim` 4.15.3;
   `composer audit` reports no advisories.
+- Internationalised domain names go through ext-intl (UTS #46,
+  non-transitional: `straße` stays `xn--strae-oqa`) instead of
+  `algo26-matthias/idna-convert`, which is no longer a dependency, nor is its
+  own `jakeasmith/http_build_url`. Names are lower-cased and put in Unicode
+  normalisation form C first, so nameserver names compare regardless of case,
+  and an `xn--` label that is not valid punycode stays as typed instead of
+  raising an error.
 
 ### CLI
 

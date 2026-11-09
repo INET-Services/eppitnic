@@ -4,64 +4,8 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "6035f09d08c6d89b4e06d5cab4dd4fa1",
+    "content-hash": "0ea9f936301ba4ed432f05d1d55329ec",
     "packages": [
-        {
-            "name": "algo26-matthias/idna-convert",
-            "version": "v3.2.1",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/algo26-matthias/idna-convert.git",
-                "reference": "82fe7b60e1a1620c72e68803cc5dcff0b5f59bdc"
-            },
-            "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/algo26-matthias/idna-convert/zipball/82fe7b60e1a1620c72e68803cc5dcff0b5f59bdc",
-                "reference": "82fe7b60e1a1620c72e68803cc5dcff0b5f59bdc",
-                "shasum": ""
-            },
-            "require": {
-                "ext-pcre": "*",
-                "jakeasmith/http_build_url": "^1",
-                "php": ">=7.2.0"
-            },
-            "require-dev": {
-                "phpunit/phpunit": "8.0"
-            },
-            "suggest": {
-                "ext-iconv": "Install ext/iconv for using input / output other than UTF-8 or ISO-8859-1",
-                "ext-mbstring": "Install ext/mbstring for using input / output other than UTF-8 or ISO-8859-1"
-            },
-            "type": "library",
-            "autoload": {
-                "psr-4": {
-                    "Algo26\\IdnaConvert\\": "src/"
-                }
-            },
-            "notification-url": "https://packagist.org/downloads/",
-            "license": [
-                "LGPL-2.1+"
-            ],
-            "authors": [
-                {
-                    "name": "Matthias Sommerfeld",
-                    "email": "matthias.sommerfeld@algo26.de",
-                    "role": "Developer"
-                }
-            ],
-            "description": "A library for encoding and decoding internationalized domain names",
-            "homepage": "http://idnaconv.net/",
-            "keywords": [
-                "idn",
-                "idna",
-                "php"
-            ],
-            "support": {
-                "issues": "https://github.com/algo26-matthias/idna-convert/issues",
-                "source": "https://github.com/algo26-matthias/idna-convert/tree/v3.2.1"
-            },
-            "time": "2025-10-10T11:40:12+00:00"
-        },
         {
             "name": "brick/math",
             "version": "1.0.0",
@@ -347,45 +291,6 @@
                 "source": "https://github.com/gabordemooij/redbean/tree/v5.7.6"
             },
             "time": "2026-04-30T15:47:40+00:00"
-        },
-        {
-            "name": "jakeasmith/http_build_url",
-            "version": "1.0.2",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/jakeasmith/http_build_url.git",
-                "reference": "18627808c80621219f80337fa4adcee7a31aff7d"
-            },
-            "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/jakeasmith/http_build_url/zipball/18627808c80621219f80337fa4adcee7a31aff7d",
-                "reference": "18627808c80621219f80337fa4adcee7a31aff7d",
-                "shasum": ""
-            },
-            "type": "library",
-            "autoload": {
-                "files": [
-                    "src/http_build_url.php"
-                ]
-            },
-            "notification-url": "https://packagist.org/downloads/",
-            "license": [
-                "MIT"
-            ],
-            "authors": [
-                {
-                    "name": "Jake A. Smith",
-                    "email": "theman@jakeasmith.com",
-                    "homepage": "https://jakeasmith.com"
-                }
-            ],
-            "description": "Deprecated: use PHP 8.5's built-in Uri\\Rfc3986\\Uri instead. Provides http_build_url() for environments without pecl_http.",
-            "support": {
-                "issues": "https://github.com/jakeasmith/http_build_url/issues",
-                "source": "https://github.com/jakeasmith/http_build_url"
-            },
-            "abandoned": true,
-            "time": "2026-09-15T07:48:37+00:00"
         },
         {
             "name": "nikic/fast-route",

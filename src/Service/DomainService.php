@@ -2,7 +2,6 @@
 
 namespace Eppitnic\Service;
 
-use Algo26\IdnaConvert\ToUnicode;
 use Eppitnic\Api\Access;
 use Eppitnic\Epp\Client;
 use Eppitnic\Epp\Contact;
@@ -202,7 +201,6 @@ final class DomainService
      *         earlier step stopped it
      */
     public static function import(Client $nic, array $names, Scope $scope): array {
-        $idnDecoder = new ToUnicode();
         $results = [];
 
         foreach ($names as $name) {
@@ -217,7 +215,7 @@ final class DomainService
             ];
 
             // IT-NIC does not answer queries for "xn--..." names
-            $name = $idnDecoder->convert(strtolower($name));
+            $name = Idn::normalize(trim($name));
 
             // a fresh object per name: fetch() re-initialises, but a failed
             // fetch would otherwise leave the previous domain's data in place
@@ -386,7 +384,7 @@ final class DomainService
      * @return string|null the error, or null when the glue is fine
      */
     public static function glueError(string $domain, array $entries, array $held = []): ?string {
-        $normal = static fn(string $name): string => Idn::ascii(rtrim(mb_strtolower(trim($name)), '.'));
+        $normal = static fn(string $name): string => Idn::ace(rtrim(trim($name), '.'));
         $domain = $normal($domain);
         foreach ($entries as $ns) {
             $name = $normal($ns['name']);
