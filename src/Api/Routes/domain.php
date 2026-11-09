@@ -134,12 +134,12 @@ $app->get('/v1/domains/expiring', function (Request $request, Response $response
 
 $app->get('/v1/domains/autocomplete', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope] = Auth::actor($request);
-    $term = $request->getQueryParams()['term'] ?? '';
+    $term = Idn::normalize(trim((string) ($request->getQueryParams()['term'] ?? '')));
     $limit = (int) ($request->getQueryParams()['limit'] ?? 10) ?: 10;
 
     // a literal term: % and _ would otherwise match anything
     $where = ["domain LIKE :term ESCAPE '!'"];
-    $params = [':term' => '%' . strtr((string) $term, ['!' => '!!', '%' => '!%', '_' => '!_']) . '%'];
+    $params = [':term' => '%' . strtr($term, ['!' => '!!', '%' => '!%', '_' => '!_']) . '%'];
     if ( ! $scope->isAdmin()) {
         $where[] = 'reseller_id = :reseller_id';
         $params[':reseller_id'] = $scope->resellerId;
@@ -230,7 +230,7 @@ $app->get('/v1/domains/transfers', function (Request $request, Response $respons
 
 $app->get('/v1/domains/{name}', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
 
     // before the registry: its answer carries the authinfo, which is ours for
     // every reseller's domain. 404 so another reseller's names don't leak. A
@@ -284,6 +284,10 @@ $app->get('/v1/domains/{name}', function (Request $request, Response $response, 
 $app->post('/v1/domains', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
     $params = $request->getParsedBody() ?? [];
+    $given = $params['domain'] ?? null;
+    if (is_string($given)) {
+        $params['domain'] = Idn::domain($given);
+    }
 
     // an AuthInfo asks for a transfer, which keeps the registrant unless one is given
     $authinfo = trim((string) ($params['authinfo'] ?? ''));
@@ -293,7 +297,7 @@ $app->post('/v1/domains', function (Request $request, Response $response, array 
         return Json::response($response, ['error' => $err], 400);
     }
     if ( ! Validate::isDomain($params['domain'])) {
-        return Json::response($response, ['error' => "'{$params['domain']}' is not a valid .it domain name"], 400);
+        return Json::response($response, ['error' => "'{$given}' is not a valid .it domain name"], 400);
     }
     if (is_string($error = DomainService::checkedNameservers($params['domain'], $params['ns'] ?? []))) {
         return Json::response($response, ['error' => $error], 400);
@@ -330,7 +334,7 @@ $app->post('/v1/domains/import', function (Request $request, Response $response,
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
     $params = $request->getParsedBody() ?? [];
 
-    $names = array_unique(array_filter(array_map('trim', (array) ($params['domains'] ?? []))));
+    $names = array_values(array_unique(array_filter(array_map(Idn::domain(...), (array) ($params['domains'] ?? [])))));
     if (empty($names)) {
         return Json::response($response, ['error' => 'domains is required (array of domain names)'], 400);
     }
@@ -349,7 +353,7 @@ $app->post('/v1/domains/import', function (Request $request, Response $response,
 
 $app->patch('/v1/domains/{name}', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
     $params = $request->getParsedBody() ?? [];
 
     if ( ! Access::canAccessDomain($name, $scope)) {
@@ -460,7 +464,7 @@ $app->patch('/v1/domains/{name}', function (Request $request, Response $response
 
 $app->post('/v1/domains/{name}/registrant', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
     $params = $request->getParsedBody() ?? [];
 
     if ( ! Access::canAccessDomain($name, $scope)) {
@@ -514,7 +518,7 @@ $app->post('/v1/domains/{name}/registrant', function (Request $request, Response
 
 $app->post('/v1/domains/{name}/status', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
     $params = $request->getParsedBody() ?? [];
 
     if ( ! Access::canAccessDomain($name, $scope)) {
@@ -569,7 +573,7 @@ $app->post('/v1/domains/{name}/status', function (Request $request, Response $re
 
 $app->delete('/v1/domains/{name}', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
     $params = $request->getQueryParams();
     $mode = $params['mode'] ?? 'now';
 
@@ -646,7 +650,7 @@ $app->delete('/v1/domains/{name}', function (Request $request, Response $respons
 
 $app->post('/v1/domains/{name}/restore', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
 
     if ( ! Access::canAccessDomain($name, $scope)) {
         return domainForbidden($response, $name);
@@ -683,7 +687,7 @@ $app->post('/v1/domains/{name}/restore', function (Request $request, Response $r
 $app->post('/v1/domains/{name}/owner', function (Request $request, Response $response, array $args): Response {
     $actorId = Auth::requireAdmin($request);
     ['debug' => $debug] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
     $params = $request->getParsedBody() ?? [];
 
     if (empty($params['reseller_id'])) {
@@ -712,7 +716,7 @@ $app->post('/v1/domains/{name}/owner', function (Request $request, Response $res
 
 $app->post('/v1/domains/{name}/transfer', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
     $params = $request->getParsedBody() ?? [];
 
     // a transfer-in request is a *claim*: the caller is not supposed to own the
@@ -771,7 +775,7 @@ $app->post('/v1/domains/{name}/transfer', function (Request $request, Response $
 foreach (['approve', 'reject', 'cancel'] as $transferAction) {
     $app->post("/v1/domains/{name}/transfer/{$transferAction}", function (Request $request, Response $response, array $args) use ($transferAction): Response {
         ['scope' => $scope, 'debug' => $debug] = Auth::actor($request);
-        $name = $args['name'];
+        $name = Idn::domain($args['name']);
         $params = $request->getParsedBody() ?? [];
         $authinfo = $params['authinfo'] ?? '';
         $method = 'transfer' . ucfirst($transferAction);

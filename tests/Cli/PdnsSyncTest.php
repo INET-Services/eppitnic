@@ -131,6 +131,34 @@ final class PdnsSyncTest extends EppTestCase
         $this->assertStringContainsString('synced', $row['exit_message']);
     }
 
+    /** the row says "sesamstraße.it", PowerDNS is told the punycode zone */
+    public function testAnIdnDomainIsSyncedUnderItsPunycodeName(): void {
+        $this->addDomain('sesamstraße.it', ['ns1.example.com', 'ns1.xn--sesamstrae-e4a.it']);
+        $this->addEvent('sesamstraße.it', 'create');
+
+        $this->sync();
+
+        $calls = $this->http->calls();
+        $this->assertStringEndsWith('/zones/xn--sesamstrae-e4a.it.', $calls[0]['url']);
+        $this->assertSame('xn--sesamstrae-e4a.it.', json_decode($calls[1]['body'], true)['name']);
+        $this->assertSame(
+            ['ns1.example.com.', 'ns1.xn--sesamstrae-e4a.it.'],
+            array_column(json_decode($calls[2]['body'], true)['rrsets'][0]['records'], 'content')
+        );
+        $this->assertSame(0, (int) R::getCell('SELECT active FROM tasks WHERE id = 1'));
+    }
+
+    public function testAnIdnZoneIsDeletedUnderItsPunycodeName(): void {
+        $this->http = new FakeHttpClient(['xn--citt-3na.it.']);
+        $this->addEvent('città.it', 'delete', '-13 hours');
+
+        $this->sync();
+
+        $call = $this->http->calls()[0];
+        $this->assertSame('DELETE', $call['method']);
+        $this->assertStringEndsWith('/zones/xn--citt-3na.it.', $call['url']);
+    }
+
     /** a row still in 6.x's `__SERIALIZED:` envelope reads like a plain one */
     public function testNameserversInTheLegacyEnvelopeAreRead(): void {
         $ns = serialize(['ns1.example.com' => 'ns1.example.com', 'ns2.example.com' => 'ns2.example.com']);

@@ -141,11 +141,20 @@ final class Validate
     }
 
     /**
-     * basic .it domain name shape check -- not a full RFC-1035 validator,
-     * just enough to reject obvious garbage before it reaches the registry
+     * basic .it domain name shape check -- not a full validator, just enough
+     * to reject obvious garbage before it reaches the registry. Takes the name
+     * in any form Idn::domain() accepts: Unicode or xn--, any case.
      */
     public static function isDomain(string $domain): bool {
-        return (bool) preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.it$/i', $domain);
+        $name = Idn::domain($domain);
+        $labels = explode('.', $name);
+
+        return count($labels) === 2
+            && $labels[1] === 'it'
+            && Idn::validate($name) === null
+            && preg_match('/^[\p{Latin}0-9-]+$/u', $labels[0]) === 1
+            // UTS #46 would remap the name, so two spellings would be one name
+            && Idn::normalize(Idn::ace($name)) === $name;
     }
 
     // -----------------------------------------------------------------

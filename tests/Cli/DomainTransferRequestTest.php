@@ -84,6 +84,13 @@ final class DomainTransferRequestTest extends EppTestCase
         $this->assertStringNotContainsString('newRegistrant', implode('', $this->sent->requests));
     }
 
+    public function testTheNameIsStoredAndSentInTheDomainsOwnForm(): void {
+        $this->request(['request', 'XN--SESAMSTRAE-E4A.IT.;SECRET1234567890']);
+
+        $this->assertSame(['sesamstraße.it'], R::getCol('SELECT domain FROM transfers'));
+        $this->assertStringContainsString('<domain:name>sesamstraße.it</domain:name>', implode('', $this->sent->requests));
+    }
+
     public function testAFileRowCarriesNoRegistrantForAPlainTransfer(): void {
         $this->request(['request', 'example-one.it;SECRET1234567890']);
 

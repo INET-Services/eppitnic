@@ -9,6 +9,7 @@ use Eppitnic\Persistence\Scope;
 use Eppitnic\Persistence\SerializedColumn;
 use Eppitnic\Service\DomainService;
 use Eppitnic\Service\PowerDnsZones;
+use Eppitnic\Support\Idn;
 use RedBeanPHP\R;
 
 /**
@@ -186,13 +187,13 @@ final class DomainUpdateCommand extends Command
         $rows = [];
         foreach ($this->names() as $line) {
             if ( ! str_contains($line, ';')) {
-                $rows[] = ['domain' => $line] + $defaults;
+                $rows[] = ['domain' => Idn::domain($line)] + $defaults;
                 continue;
             }
 
             $fields = array_map('trim', explode(';', $line));
             $rows[] = [
-                'domain' => $fields[0],
+                'domain' => Idn::domain($fields[0]),
                 'add_ns' => isset($fields[1]) ? $this->splitList($fields[1]) : $defaults['add_ns'],
                 'rem_ns' => isset($fields[2]) ? $this->splitList($fields[2]) : $defaults['rem_ns'],
             ] + $defaults;

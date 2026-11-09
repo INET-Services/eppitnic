@@ -3,6 +3,7 @@
 namespace Eppitnic\PowerDns;
 
 use Eppitnic\Service\PowerDnsApis;
+use Eppitnic\Support\Idn;
 
 /**
  * The four PowerDNS authoritative HTTP API calls `pdns sync` needs, for one
@@ -129,8 +130,9 @@ final class Api
         return $this->fqdn($zone);
     }
 
+    /** the only place a name reaches PowerDNS, which holds zones in punycode */
     private function fqdn(string $name): string {
-        return rtrim($name, '.') . '.';
+        return Idn::ace(rtrim($name, '.')) . '.';
     }
 
     /** @return array{status: int, body: string, error: string} */

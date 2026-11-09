@@ -55,6 +55,45 @@ final class DomainCommandTest extends EppTestCase
         $this->assertStringContainsString('taken', $output);
     }
 
+    /** the registry is asked in Unicode, once per name however it was typed */
+    public function testCheckAsksForEachNameOnceInUnicode(): void {
+        $command = new DomainCheckCommand(['Sesamstraße.IT', 'xn--sesamstrae-e4a.it', 'SESAMSTRAẞE.it.']);
+        $transport = new FakeTransport();
+        $transport->queue(CommandCatalog::GREETING_RESPONSE);
+        $transport->queue(CommandCatalog::OK_RESPONSE);
+        $transport->queue(CommandCatalog::DOMAIN_CHECK_RESPONSE);
+        $transport->queue(CommandCatalog::OK_RESPONSE);
+        $this->nic->setTransport($transport);
+        $command->useClient($this->nic);
+        $command->useErrorStream(fopen('php://memory', 'w+'));
+
+        ob_start();
+        $command->run();
+        ob_end_clean();
+
+        $check = implode('', array_filter($transport->requests, static fn($r) => str_contains($r, '<domain:check')));
+        $this->assertSame(1, substr_count($check, '<domain:name>'));
+        $this->assertStringContainsString('<domain:name>sesamstraße.it</domain:name>', $check);
+    }
+
+    public function testInfoAsksInUnicodeForAPunycodeName(): void {
+        $command = new DomainInfoCommand(['XN--SESAMSTRAE-E4A.IT']);
+        $transport = new FakeTransport();
+        $transport->queue(CommandCatalog::GREETING_RESPONSE);
+        $transport->queue(CommandCatalog::OK_RESPONSE);
+        $transport->queue(CommandCatalog::DOMAIN_INFO_RESPONSE);
+        $transport->queue(CommandCatalog::OK_RESPONSE);
+        $this->nic->setTransport($transport);
+        $command->useClient($this->nic);
+        $command->useErrorStream(fopen('php://memory', 'w+'));
+
+        ob_start();
+        $command->run();
+        ob_end_clean();
+
+        $this->assertStringContainsString('>sesamstraße.it</domain:name>', implode('', $transport->requests));
+    }
+
     public function testCheckJsonOutputIsParseable(): void {
         $command = new DomainCheckCommand(['--json', 'example-one.it', 'example-two.it']);
 

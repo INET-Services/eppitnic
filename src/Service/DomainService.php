@@ -50,7 +50,7 @@ final class DomainService
      *         action is created, transfer-requested or trade-requested
      */
     public static function createOrTransfer(Client $nic, array $params, Scope $scope, bool $persist = true, bool $registerOnly = false): array {
-        $name = $params['domain'];
+        $name = Idn::domain($params['domain']);
         $authinfo = trim((string) ($params['authinfo'] ?? ''));
         $registrant = trim((string) ($params['registrant'] ?? ''));
         $transfer = ! $registerOnly && $authinfo !== '';
@@ -215,7 +215,7 @@ final class DomainService
             ];
 
             // IT-NIC does not answer queries for "xn--..." names
-            $name = Idn::normalize(trim($name));
+            $name = Idn::domain($name);
 
             // a fresh object per name: fetch() re-initialises, but a failed
             // fetch would otherwise leave the previous domain's data in place

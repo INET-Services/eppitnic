@@ -24,7 +24,17 @@ final class DomainServiceGlueTest extends TestCase
             'punycode host, unicode domain' => ['città.it', 'ns1.xn--citt-3na.it'],
             'unicode host, punycode domain' => ['xn--citt-3na.it', 'ns1.città.it'],
             'trailing dot'                  => ['città.it', 'NS1.Città.it.'],
+            'sharp s, both unicode'         => ['sesamstraße.it', 'ns1.sesamstraße.it'],
+            'sharp s, punycode host'        => ['sesamstraße.it', 'ns1.xn--sesamstrae-e4a.it'],
+            'sharp s, punycode domain'      => ['xn--sesamstrae-e4a.it', 'ns1.sesamstraße.it'],
+            'sharp s, upper case'           => ['SESAMSTRAßE.IT', 'NS1.sesamstraße.it'],
         ];
+    }
+
+    public function testSsIsNotSharpS(): void {
+        $error = DomainService::glueError('sesamstraße.it', [['name' => 'ns1.sesamstrasse.it', 'ip' => ['192.0.2.1']]]);
+
+        $this->assertStringContainsString('only allowed for nameservers under', (string) $error);
     }
 
     public function testGlueOutsideAnIdnDomainIsStillRefused(): void {

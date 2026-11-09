@@ -9,6 +9,7 @@ use Eppitnic\Epp\Transport\DryRun;
 use Eppitnic\Persistence\Scope;
 use Eppitnic\Service\EppSession;
 use Eppitnic\Setup\ConfigMissing;
+use Eppitnic\Support\Idn;
 
 /**
  * Base for every `bin/eppitnic` subcommand: option parsing, name lists, output
@@ -383,6 +384,23 @@ abstract class Command
         }
 
         return array_values(array_unique(array_filter($names, fn($n) => trim($n) !== '')));
+    }
+
+    /**
+     * names() as domain names, each in the form Idn::domain() gives.
+     *
+     * @return string[]
+     */
+    protected function domainNames(): array {
+        return self::domainList($this->names());
+    }
+
+    /**
+     * @param string[] $names
+     * @return string[] the domain names among them, canonical and unique
+     */
+    protected static function domainList(array $names): array {
+        return array_values(array_unique(array_filter(array_map(Idn::domain(...), $names), 'strlen')));
     }
 
     // ---------------------------------------------------------------

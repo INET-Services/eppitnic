@@ -3,6 +3,7 @@
 namespace Eppitnic\Cli\Command;
 
 use Eppitnic\Cli\Command;
+use Eppitnic\Support\Idn;
 use RedBeanPHP\R;
 
 /**
@@ -40,7 +41,7 @@ final class PollListCommand extends Command
         }
         if ($domain = $this->option('domain')) {
             $where[] = 'domain = :domain';
-            $params[':domain'] = $domain;
+            $params[':domain'] = Idn::domain($domain);
         }
 
         $limit = $this->option('limit');

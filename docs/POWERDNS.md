@@ -114,6 +114,10 @@ For a create or an update, on every listed API:
 2. Create it if it is missing, as a `Native` zone.
 3. Replace its apex NS records with the domain's nameservers, at `ttl`.
 
+Zone and NS names go to PowerDNS in punycode: the zone of `sesamstraße.it`
+is `xn--sesamstrae-e4a.it.`, although eppitnic stores and shows the Unicode
+name.
+
 A delete waits until the task is `delay_hours` old, then deletes the zone on
 every listed API. A zone that already exists, or is already gone, counts as
 success, so every step is safe to repeat.

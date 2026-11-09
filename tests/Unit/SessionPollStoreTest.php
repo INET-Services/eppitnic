@@ -5,6 +5,7 @@ namespace Eppitnic\Tests\Unit;
 use Eppitnic\Epp\Session;
 use Eppitnic\Tests\Support\CommandCatalog;
 use Eppitnic\Tests\Support\EppTestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RedBeanPHP\R;
 
 /**
@@ -49,6 +50,26 @@ final class SessionPollStoreTest extends EppTestCase
 
         $this->assertSame(['chgStatusMsgData', 'example-one.it'], array_values(R::getRow('SELECT type, domain FROM messages')));
         $this->assertSame(1, (int) R::getCell('SELECT COUNT(*) FROM messages'));
+    }
+
+    /** the row must match the domain's own, which is stored in one form */
+    #[DataProvider('namesAsTheRegistryMaySendThem')]
+    public function testTheMessagesDomainIsStoredInTheDomainsOwnForm(string $sent): void {
+        $this->transport->queue(str_replace('example-one.it', $sent, CommandCatalog::POLL_RESPONSE));
+        $session = new Session($this->nic);
+
+        $this->assertTrue($session->poll(true, 'req'));
+
+        $this->assertSame('sesamstraße.it', R::getCell('SELECT domain FROM messages'));
+    }
+
+    public static function namesAsTheRegistryMaySendThem(): array {
+        return [
+            'unicode'    => ['sesamstraße.it'],
+            'upper case' => ['SESAMSTRAßE.IT'],
+            'punycode'   => ['xn--sesamstrae-e4a.it'],
+            'trailing dot' => ['sesamstraße.it.'],
+        ];
     }
 
     public function testAFailedRequestStoresNoMessage(): void {

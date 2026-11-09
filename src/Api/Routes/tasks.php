@@ -3,6 +3,7 @@
 use Eppitnic\Api\Auth;
 use Eppitnic\Api\Json;
 use Eppitnic\Persistence\History;
+use Eppitnic\Support\Idn;
 use Eppitnic\Support\Validate;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -60,7 +61,7 @@ $app->get('/v1/tasks', function (Request $request, Response $response, array $ar
 
 $app->get('/v1/domains/{name}/tasks', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
 
     // object IS NULL: only the plain human-facing notices belong here --
     // an automated consumer's own rows (object set) are its own business,
@@ -83,7 +84,7 @@ $app->get('/v1/domains/{name}/tasks', function (Request $request, Response $resp
 
 $app->post('/v1/domains/{name}/tasks', function (Request $request, Response $response, array $args): Response {
     ['scope' => $scope] = Auth::actor($request);
-    $name = $args['name'];
+    $name = Idn::domain($args['name']);
     $params = $request->getParsedBody() ?? [];
 
     if (empty($params['date']) || empty($params['notice'])) {

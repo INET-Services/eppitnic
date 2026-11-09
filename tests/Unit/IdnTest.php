@@ -67,6 +67,39 @@ final class IdnTest extends TestCase
     }
 
     // -----------------------------------------------------------------
+    // domain()
+    // -----------------------------------------------------------------
+
+    #[DataProvider('domainsAsTyped')]
+    public function testDomainIsOneFormWhicheverWayItIsTyped(string $typed): void {
+        $this->assertSame('sesamstraße.it', Idn::domain($typed));
+    }
+
+    public static function domainsAsTyped(): array {
+        return [
+            'as stored'              => ['sesamstraße.it'],
+            'upper case'             => ['SESAMSTRAßE.IT'],
+            'capital sharp s'        => ['SESAMSTRAẞE.it'],
+            'punycode'               => ['xn--sesamstrae-e4a.it'],
+            'upper-case punycode'    => ['XN--SESAMSTRAE-E4A.IT'],
+            'trailing dot'           => ['sesamstraße.it.'],
+            'surrounding whitespace' => ["  sesamstraße.it\n"],
+        ];
+    }
+
+    public function testDomainComposesWhatIsDecomposed(): void {
+        $this->assertSame('città.it', Idn::domain("citta\u{0300}.IT."));
+    }
+
+    public function testDomainKeepsSsApartFromSharpS(): void {
+        $this->assertSame('sesamstrasse.it', Idn::domain('SESAMSTRASSE.it'));
+    }
+
+    public function testDomainOfNothingIsNothing(): void {
+        $this->assertSame('', Idn::domain(' . '));
+    }
+
+    // -----------------------------------------------------------------
     // ace()
     // -----------------------------------------------------------------
 
@@ -235,8 +268,6 @@ final class IdnTest extends TestCase
             'leading hyphen'                => ['-a.it', 'a label must not start with a hyphen'],
             'trailing hyphen'               => ['a-.it', 'a label must not end with a hyphen'],
             'leading hyphen, Unicode'       => ['-à.it', 'a label must not start with a hyphen'],
-            'hyphens in positions 3-4'      => ['ab--cd.it', 'a label must not have hyphens in its third and fourth position unless it is a valid xn-- label'],
-            'hyphens in positions 3-4, Unicode' => ['àb--cd.it', 'a label must not have hyphens in its third and fourth position unless it is a valid xn-- label'],
             'invalid punycode'              => ['xn--zz.it', 'an xn-- label is not valid punycode'],
             'xn-- label that is not a label' => ['xn--abc-.it', 'an xn-- label does not decode to a valid label'],
             'combining mark first'          => ["\u{0301}a.it", 'a label must not start with a combining mark'],
@@ -247,9 +278,12 @@ final class IdnTest extends TestCase
         ];
     }
 
-    public function testValidateAllowsAValidXnLabelWithHyphensInPositionsThreeAndFour(): void {
+    public function testValidateAllowsHyphensInPositionsThreeAndFour(): void {
+        // the .it registry accepts them, ASCII and Unicode alike
         $this->assertNull(Idn::validate('xn--citt-3na.it'));
-        $this->assertNotNull(Idn::validate('ab--citt-3na.it'));
+        $this->assertNull(Idn::validate('ab--cd.it'));
+        $this->assertNull(Idn::validate('àb--cd.it'));
+        $this->assertSame('an xn-- label is not valid punycode', Idn::validate('xn--zz.it'));
     }
 
     public function testValidateJudgesTheNameAfterNormalising(): void {

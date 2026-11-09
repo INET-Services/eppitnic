@@ -158,6 +158,15 @@ final class SelftestCommandTest extends TestCase
         $this->assertStringContainsString('nothing done', $output);
     }
 
+    public function testASuppliedIdnDomainIsAnnouncedInUnicode(): void {
+        $this->configured(self::TEST);
+
+        [$code, $output] = $this->capture($this->quiet(new SelftestRunCommand(['--domain=XN--SESAMSTRAE-E4A.it'])));
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('sesamstraße.it', $output);
+    }
+
     /**
      * The pause only exists to let nic.it finish checking a real delegation.
      * A generated name can never resolve, so there is nothing to wait for and

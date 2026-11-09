@@ -9,7 +9,8 @@
 -- webauthn_challenges and authenticator_metadata tables, and their settings,
 -- and transfers.authinfo, the code a transfer-in was requested with,
 -- transfers.kind (transfer or trade) and a nullable transfers.registrant (NULL:
--- a plain transfer)
+-- a plain transfer), and domain names compared byte for byte (utf8mb4_bin) and
+-- refused with capitals (CHECK)
 -- ============================================================================
 
 ALTER TABLE `resellers`
@@ -153,6 +154,57 @@ ALTER TABLE `transfers`
 ALTER TABLE `transfers`
   ADD COLUMN IF NOT EXISTS `kind` enum('transfer','trade') NOT NULL DEFAULT 'transfer' AFTER `authinfo`,
   MODIFY COLUMN `registrant` varchar(32) NULL;
+
+-- Domain names compare byte for byte: unicode_ci equates 'città.it' with
+-- 'citta.it' and 'sesamstraße.it' with 'sesamstrasse.it'. Names are stored in
+-- lower case; the unique keys allowed no two that differ by case, so this
+-- cannot collide. NFC and xn-- forms are Idn::domain()'s to settle, not SQL's.
+UPDATE `domains`   SET `domain` = LOWER(`domain`)
+  WHERE `domain` COLLATE utf8mb4_bin <> LOWER(`domain`) COLLATE utf8mb4_bin;
+UPDATE `transfers` SET `domain` = LOWER(`domain`)
+  WHERE `domain` COLLATE utf8mb4_bin <> LOWER(`domain`) COLLATE utf8mb4_bin;
+UPDATE `messages`  SET `domain` = LOWER(`domain`)
+  WHERE `domain` COLLATE utf8mb4_bin <> LOWER(`domain`) COLLATE utf8mb4_bin;
+
+-- A task takes the spelling of the domain its foreign key tied it to
+UPDATE `tasks` t JOIN `domains` d ON d.`domain` = t.`domain`
+  SET t.`domain` = d.`domain`
+  WHERE t.`domain` COLLATE utf8mb4_bin <> d.`domain` COLLATE utf8mb4_bin;
+
+-- the foreign key cannot follow its column through the collation change
+SET @fk := (SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tasks' AND COLUMN_NAME = 'domain'
+    AND REFERENCED_TABLE_NAME = 'domains' LIMIT 1);
+SET @sql := IF(@fk IS NULL, 'DO 0', CONCAT('ALTER TABLE tasks DROP FOREIGN KEY `', @fk, '`'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+ALTER TABLE `domains`
+  MODIFY COLUMN `domain` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE `transfers`
+  MODIFY COLUMN `domain` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE `tasks`
+  MODIFY COLUMN `domain` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE `messages`
+  MODIFY COLUMN `domain` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL;
+
+-- put back unless a run cut short already has
+SET @fk := (SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tasks' AND COLUMN_NAME = 'domain'
+    AND REFERENCED_TABLE_NAME = 'domains' LIMIT 1);
+SET @sql := IF(@fk IS NOT NULL, 'DO 0',
+  'ALTER TABLE tasks ADD CONSTRAINT FOREIGN KEY (`domain`) REFERENCES domains(`domain`) ON DELETE RESTRICT ON UPDATE CASCADE');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- Lower case only (LOWER() skips U+1E9E); tasks follows domains by its key
+ALTER TABLE `domains`
+  ADD CONSTRAINT IF NOT EXISTS `domains_domain_lower`
+  CHECK (`domain` = LOWER(`domain`) AND LOCATE(CHAR(0xE1BA9E USING utf8mb4), `domain`) = 0);
+ALTER TABLE `transfers`
+  ADD CONSTRAINT IF NOT EXISTS `transfers_domain_lower`
+  CHECK (`domain` = LOWER(`domain`) AND LOCATE(CHAR(0xE1BA9E USING utf8mb4), `domain`) = 0);
+ALTER TABLE `messages`
+  ADD CONSTRAINT IF NOT EXISTS `messages_domain_lower`
+  CHECK (`domain` = LOWER(`domain`) AND LOCATE(CHAR(0xE1BA9E USING utf8mb4), `domain`) = 0);
 
 INSERT INTO `settings` (`key`, `value`) VALUES
   ('schema_version', '"070100"')

@@ -24,7 +24,7 @@ final class DomainCheckCommand extends Command
     }
 
     public function run(): int {
-        $names = $this->names();
+        $names = $this->domainNames();
         if ($names === []) {
             throw new UsageError('give at least one domain name, or --file=PATH');
         }

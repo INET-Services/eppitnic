@@ -254,7 +254,9 @@ CREATE TABLE `domains` (
   `reseller_id`           bigint unsigned NOT NULL DEFAULT 1,
   `active`                tinyint DEFAULT 1,
   `status`                text,
-  `domain`                varchar(255) unique NOT NULL,
+  -- domain names compare byte for byte: unicode_ci equates 'città.it' with
+  -- 'citta.it'. They are stored as Idn::domain() gives them (lower case, NFC)
+  `domain`                varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin unique NOT NULL,
   `authinfo`              varchar(64),
   `ns`                    text,
   `registrant`            varchar(32) NOT NULL,
@@ -266,13 +268,16 @@ CREATE TABLE `domains` (
   `last_invoice`          timestamp DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   CONSTRAINT FOREIGN KEY (reseller_id) REFERENCES resellers(id) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT FOREIGN KEY (registrant) REFERENCES contacts(handle) ON DELETE RESTRICT ON UPDATE CASCADE
+  CONSTRAINT FOREIGN KEY (registrant) REFERENCES contacts(handle) ON DELETE RESTRICT ON UPDATE CASCADE,
+  -- lower case only; LOWER() leaves a capital U+1E9E alone, so it is
+  -- tested for apart. tasks.domain follows this column by its foreign key
+  CONSTRAINT `domains_domain_lower` CHECK (`domain` = LOWER(`domain`) AND LOCATE(CHAR(0xE1BA9E USING utf8mb4), `domain`) = 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `transfers` (
   `id`                    serial,
   `reseller_id`           bigint unsigned NOT NULL DEFAULT 1,
-  `domain`                varchar(255) unique NOT NULL,
+  `domain`                varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin unique NOT NULL,
   `techc`                 text,
   `dns`                   text,
   -- the registrant a transfer-trade changes the domain to (kind 'trade');
@@ -289,7 +294,8 @@ CREATE TABLE `transfers` (
   `attempted_at`          datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   CONSTRAINT FOREIGN KEY (reseller_id) REFERENCES resellers(id) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT FOREIGN KEY (registrant) REFERENCES contacts(handle) ON DELETE RESTRICT ON UPDATE CASCADE
+  CONSTRAINT FOREIGN KEY (registrant) REFERENCES contacts(handle) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `transfers_domain_lower` CHECK (`domain` = LOWER(`domain`) AND LOCATE(CHAR(0xE1BA9E USING utf8mb4), `domain`) = 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `messages` (
@@ -297,14 +303,15 @@ CREATE TABLE `messages` (
   `cl_trid`               varchar(64),
   `sv_trid`               varchar(64),
   `type`                  varchar(64) NOT NULL,
-  `domain`                varchar(255),
+  `domain`                varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
   `ac_id`                 varchar(255),
   `re_id`                 varchar(255),
   `data`                  text NOT NULL,
   `archived_time`         datetime DEFAULT NULL,
   `archived_user_id`      bigint unsigned,
   `created_time`          timestamp DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  CONSTRAINT `messages_domain_lower` CHECK (`domain` = LOWER(`domain`) AND LOCATE(CHAR(0xE1BA9E USING utf8mb4), `domain`) = 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- A queue of two things: human-facing scheduled notices (`object` NULL, e.g.
@@ -316,7 +323,7 @@ CREATE TABLE `messages` (
 -- `active`, a failure or a skip stays active so the next run retries it.
 CREATE TABLE `tasks` (
   `id`                    serial,
-  `domain`                varchar(255) NOT NULL,
+  `domain`                varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `date`                  date NOT NULL,
   `notice`                varchar(255),
   `email`                 varchar(64),

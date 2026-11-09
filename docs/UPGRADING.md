@@ -87,6 +87,17 @@ upgrades itself (`070000` to `070100`) on the first connection. Then:
    being the new domain's code, and refuses a registered name: use `domain
    transfer request`.
 
+10. **Domain names are exact.** `domains.domain`, `transfers.domain`,
+    `tasks.domain` and `messages.domain` compare byte for byte now, so
+    `città.it` and `citta.it` are two domains and SQL written against
+    `Example.it` no longer finds `example.it`. The upgrade lower-cases names
+    stored with capitals and nothing else changes; names are lower case
+    Unicode (`sesamstraße.it`, not `xn--sesamstrae-e4a.it`) from here on, in
+    the API, the CLI and the database. The database refuses a name with
+    capitals (`Example.it`) in `domains`, `transfers` and `messages`, and
+    `tasks` only takes names `domains` holds: SQL of your own has to write
+    lower case.
+
 ## From 6.x to 7.0
 
 Upgrading a 6.x installation to 7.0 converts `config.xml`, migrates the

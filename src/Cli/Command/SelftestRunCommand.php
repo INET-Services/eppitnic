@@ -13,6 +13,7 @@ use Eppitnic\Selftest\Scenario\ContactLifecycle;
 use Eppitnic\Selftest\Scenario\DomainLifecycle;
 use Eppitnic\Selftest\Scenario\TransferRequest;
 use Eppitnic\Selftest\Step;
+use Eppitnic\Support\Idn;
 use Eppitnic\Support\Validate;
 
 /**
@@ -111,7 +112,7 @@ final class SelftestRunCommand extends Command
      */
     private function scenarios(): array {
         if ($this->hasOption('transfer')) {
-            $domain = trim((string) $this->option('transfer'));
+            $domain = Idn::domain((string) $this->option('transfer'));
             $authinfo = (string) $this->option('authinfo', '');
 
             if ($domain === '') {
@@ -147,7 +148,7 @@ final class SelftestRunCommand extends Command
         if ( ! $this->hasOption('domain')) {
             return null;
         }
-        $domain = strtolower(trim((string) $this->option('domain')));
+        $domain = Idn::domain((string) $this->option('domain'));
 
         if ( ! Validate::isDomain($domain)) {
             throw new UsageError("'{$domain}' is not a .it domain name");

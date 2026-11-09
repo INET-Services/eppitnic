@@ -55,6 +55,33 @@ final class PowerDnsZonesTest extends EppTestCase
         $this->assertSame(['GET pdns1', 'POST pdns1', 'PATCH pdns1', 'GET pdns2', 'PATCH pdns2'], $this->calls());
     }
 
+    /** PowerDNS holds zones in punycode; our own database keeps Unicode */
+    public function testAnIdnZoneAndItsNameserversReachPowerDnsInPunycode(): void {
+        PowerDnsZones::provision('sesamstraße.it', ['ns1.example.it', 'ns1.sesamstraße.it']);
+
+        $requests = $this->http->calls();
+        $this->assertStringEndsWith('/zones/xn--sesamstrae-e4a.it.', $requests[0]['url']);
+        $this->assertSame('POST', $requests[1]['method']);
+        $this->assertSame(
+            ['name' => 'xn--sesamstrae-e4a.it.', 'kind' => 'Native', 'nameservers' => ['ns1.example.it.', 'ns1.xn--sesamstrae-e4a.it.']],
+            json_decode((string) $requests[1]['body'], true)
+        );
+        $this->assertStringEndsWith('/zones/xn--sesamstrae-e4a.it.', $requests[2]['url']);
+        $this->assertStringContainsString('"ns1.xn--sesamstrae-e4a.it."', (string) $requests[2]['body']);
+        foreach ($requests as $request) {
+            $this->assertStringNotContainsString('ß', $request['url'] . $request['body']);
+        }
+    }
+
+    public function testUndoDeletesAnIdnZoneByItsPunycodeId(): void {
+        $zone = PowerDnsZones::provision('città.it', ['ns1.example.it']);
+        PowerDnsZones::undo('città.it', $zone, []);
+
+        $last = $this->http->calls()[array_key_last($this->http->calls())];
+        $this->assertSame('DELETE', $last['method']);
+        $this->assertStringEndsWith('/zones/xn--citt-3na.it.', $last['url']);
+    }
+
     public function testNothingHappensWithoutAListedNameserver(): void {
         $zone = PowerDnsZones::provision('example-one.it', ['ns9.other.it']);
 

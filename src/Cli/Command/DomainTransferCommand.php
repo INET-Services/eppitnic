@@ -9,6 +9,7 @@ use Eppitnic\Epp\Domain;
 use Eppitnic\Persistence\History;
 use Eppitnic\Persistence\Scope;
 use Eppitnic\Service\DomainService;
+use Eppitnic\Support\Idn;
 use RedBeanPHP\R;
 
 /**
@@ -58,8 +59,9 @@ final class DomainTransferCommand extends Command
         $registrants = [];
         foreach ($names as $line) {
             $fields = array_map('trim', explode(';', $line));
-            $targets[$fields[0]] = ($fields[1] ?? '') !== '' ? $fields[1] : $shared;
-            $registrants[$fields[0]] = ($fields[2] ?? '') !== '' ? $fields[2] : $sharedRegistrant;
+            $name = Idn::domain($fields[0]);
+            $targets[$name] = ($fields[1] ?? '') !== '' ? $fields[1] : $shared;
+            $registrants[$name] = ($fields[2] ?? '') !== '' ? $fields[2] : $sharedRegistrant;
         }
 
         // a request is the one operation the registry will not accept without

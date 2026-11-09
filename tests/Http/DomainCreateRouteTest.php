@@ -9,6 +9,7 @@ use Eppitnic\Tests\Support\CommandCatalog;
 use Eppitnic\Tests\Support\EppTestCase;
 use Eppitnic\Tests\Support\FakeTransport;
 use Eppitnic\Tests\Support\TestAccounts;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Psr\Http\Message\ResponseInterface;
 use RedBeanPHP\R;
 use Slim\Factory\AppFactory;
@@ -146,6 +147,60 @@ final class DomainCreateRouteTest extends EppTestCase
         $this->assertSame(['register'], $this->requestedKinds());
         $this->assertSame(2, (int) R::getCell("SELECT reseller_id FROM domains WHERE domain = 'free.it'"));
         $this->assertSame(0, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
+    }
+
+    /** stored and asked in Unicode, whatever the spelling; hosts in punycode */
+    #[DataProvider('idnSpellings')]
+    public function testAnIdnNameIsRegisteredInUnicodeWhateverTheSpelling(string $given): void {
+        $response = $this->post([
+            'domain' => $given, 'registrant' => 'MINE1234MINE5678',
+            'ns' => [['name' => 'ns1.sesamstraße.it', 'ipv4' => '192.0.2.1'], 'ns2.example.it'],
+        ]);
+
+        $this->assertSame(201, $response->getStatusCode());
+        $this->assertSame('sesamstraße.it', $this->json($response)['domain']['domain']);
+        $this->assertSame(['sesamstraße.it'], R::getCol('SELECT domain FROM domains WHERE reseller_id = 2'));
+        $this->assertStringContainsString('<domain:name>sesamstraße.it</domain:name>', $this->sent());
+        $this->assertStringContainsString('ns1.xn--sesamstrae-e4a.it', $this->sent());
+        $this->assertStringNotContainsString('ns1.sesamstraße.it', $this->sent());
+        $this->assertSame(['register'], $this->requestedKinds());
+        $this->assertSame(1, (int) R::getCell("SELECT COUNT(*) FROM history WHERE object = 'domains' AND action = 'request' AND object_id > 0"));
+    }
+
+    public static function idnSpellings(): array {
+        return [
+            'unicode'    => ['sesamstraße.it'],
+            'upper case' => ['SESAMSTRAßE.IT'],
+            'punycode'   => ['xn--sesamstrae-e4a.it'],
+            'dot, space' => [' Sesamstraße.it. '],
+        ];
+    }
+
+    #[DataProvider('notItDomains')]
+    public function testANameThatIsNotAnItDomainIsRefusedAsGiven(string $given): void {
+        $response = $this->post(['domain' => $given, 'registrant' => 'MINE1234MINE5678']);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertSame("'{$given}' is not a valid .it domain name", $this->json($response)['error']);
+        $this->assertSame([], $this->sessions);
+    }
+
+    public static function notItDomains(): array {
+        return [
+            'Cyrillic'     => ['пример.it'],
+            'Greek'        => ['Σάσα.it'],
+            'three labels' => ['www.sesamstraße.it'],
+            'another TLD'  => ['sesamstraße.com'],
+        ];
+    }
+
+    public function testAnIdnNameHeldByAnotherResellerIsNotClaimedInAnotherSpelling(): void {
+        R::exec("INSERT INTO domains (domain, reseller_id, registrant) VALUES ('sesamstraße.it', 3, 'THEIR234THEIR678')");
+
+        $response = $this->post(['domain' => 'XN--SESAMSTRAE-E4A.IT', 'authinfo' => self::AUTHINFO]);
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertSame([], $this->sessions);
     }
 
     public function testNoAuthinfoNeedsARegistrant(): void {

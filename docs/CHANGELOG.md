@@ -91,6 +91,24 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   `GET /v1/domains/transfers`, whose `name` and `email` are `null` for a plain
   transfer.
 
+- Internationalised domain names can be registered and managed: `POST
+  /v1/domains` takes `sesamstraße.it` (Latin letters before `.it`; other
+  scripts are refused). A domain name is stored, returned and sent to the
+  registry in Unicode, lower case and normalisation form C, however it
+  arrives: in any case, as `xn--` punycode, decomposed, with a trailing dot.
+  That covers every `{name}` route, `domain` and `domains[]` in a body, the
+  autocomplete `term`, the CLI's `domain` verbs, their `--file` rows and
+  `poll list --domain`, and the domains named in poll messages
+  (`Idn::domain()`). `selftest run --domain` and `--transfer` take it too.
+  Nameserver names still go to the registry in punycode, and a nameserver
+  counts as under its IDN domain (glue) in either form.
+- Zones and NS records reach PowerDNS in punycode (`xn--sesamstrae-e4a.it.`);
+  the database keeps Unicode.
+- `Validate::isDomain()` accepts exactly one label and `.it`: `a-z`, `0-9`,
+  hyphens and Latin letters, valid under UTS #46, and no label with hyphens
+  in its third and fourth place. A name UTS #46 would map to another one
+  (full-width letters, ligatures) is refused.
+
 ### Users and sessions
 
 - `users.email` is required, unique (case-insensitively) and 256 characters
@@ -280,6 +298,17 @@ Schema `070100`, applied automatically:
 - New columns `users.token_lifetime`, `resellers.entitytype`,
   `resellers.dnssec_algorithm` and `resellers.dnssec_digesttype`.
 - New tables `password_resets` and `password_reset_attempts`.
+- Domain names compare byte for byte: `domains.domain`, `transfers.domain`,
+  `tasks.domain` and `messages.domain` move from `utf8mb4_unicode_ci` to
+  `utf8mb4_bin`, which treated `città.it` and `citta.it`, `sesamstraße.it` and
+  `sesamstrasse.it` or `ITALIA.it` and `italia.it` as one name in the unique
+  keys and every lookup. The upgrade first lower-cases names with capitals
+  (the old unique keys allowed no two that differed by case) and gives a
+  task the spelling of the domain it belongs to, then drops and restores the
+  foreign key of `tasks.domain`. A `CHECK` on `domains.domain`,
+  `transfers.domain` and `messages.domain` makes the database refuse a name
+  with capitals (`Example.it`, `CITTÀ.it`, `straẞe.it`); `tasks.domain` follows
+  `domains.domain` through its foreign key. Safe to run again.
 - New column `transfers.authinfo`, the code a transfer-in was requested with,
   and `transfers.kind` (`transfer` or `trade`; existing rows are `transfer`).
   `transfers.registrant` may be NULL: a plain transfer has none.

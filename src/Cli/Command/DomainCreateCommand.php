@@ -6,6 +6,7 @@ use Eppitnic\Cli\Command;
 use Eppitnic\Cli\UsageError;
 use Eppitnic\Persistence\Scope;
 use Eppitnic\Service\DomainService;
+use Eppitnic\Support\Idn;
 
 /**
  * Register domains. A name already registered is refused: `domain transfer
@@ -113,13 +114,13 @@ final class DomainCreateCommand extends Command
         $rows = [];
         foreach ($this->names() as $line) {
             if ( ! str_contains($line, ';')) {
-                $rows[] = ['domain' => $line] + $defaults;
+                $rows[] = ['domain' => Idn::domain($line)] + $defaults;
                 continue;
             }
 
             $fields = array_map('trim', explode(';', $line));
             $rows[] = [
-                'domain'     => $fields[0],
+                'domain'     => Idn::domain($fields[0]),
                 'registrant' => $fields[1] ?? $defaults['registrant'],
                 'ns'         => isset($fields[3]) ? $this->splitList($fields[3]) : $defaults['ns'],
             ] + $defaults;

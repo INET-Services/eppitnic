@@ -3,6 +3,7 @@
 namespace Eppitnic\Epp;
 
 use Eppitnic\Service\SessionState;
+use Eppitnic\Support\Idn;
 use RedBeanPHP\R;
 
 /**
@@ -285,16 +286,6 @@ class Session extends AbstractObject
   }
 
   /**
-   * method to remove trailing slashes from domain names (dnsErrorMsgData cases)
-   *
-   * @param string $domain domain name
-   * @return string domain name
-   */
-  protected function stripTrailingDots(string $domain): string {
-    return (substr($domain, strlen($domain)-1) == ".") ? substr($domain, 0, strlen($domain)-1) : $domain;
-  }
-
-  /**
    * summarise a DnsValidatorResult (extdom-2.0): which validation tests ran
    * and how each came out.
    *
@@ -370,7 +361,7 @@ class Session extends AbstractObject
         $data = $extension->delayedDebitAndRefundMsgData;
         return array(
           'type'   => 'delayedDebitAndRefundMsgData',
-          'domain' => $this->stripTrailingDots((string)$data->name),
+          'domain' => Idn::domain((string)$data->name),
           'data'   => $title . " (" . (string)$data->name . " / " . (string)$data->amount . ")",
         );
       }
@@ -395,7 +386,7 @@ class Session extends AbstractObject
       $remap = $extdom->remappedIdnData;
       return array(
         'type'   => 'remappedIdnData',
-        'domain' => $this->stripTrailingDots((string)$remap->idnCreated),
+        'domain' => Idn::domain((string)$remap->idnCreated),
         'data'   => $title . " (requested " . (string)$remap->idnRequested .
                     ", created " . (string)$remap->idnCreated . ")",
       );
@@ -409,7 +400,7 @@ class Session extends AbstractObject
       $outcomes = $this->dnsTestOutcomes($warning);
       return array(
         'type'   => 'dnsWarningMsgData',
-        'domain' => $this->stripTrailingDots((string)$warning->domain),
+        'domain' => Idn::domain((string)$warning->domain),
         'data'   => $title . " (" . implode(", ", $outcomes) . ")",
       );
     }
@@ -421,7 +412,7 @@ class Session extends AbstractObject
       $outcomes = $this->dnsTestOutcomes($error);
       return array(
         'type'   => 'dnsErrorMsgData',
-        'domain' => $this->stripTrailingDots((string)$error->domain),
+        'domain' => Idn::domain((string)$error->domain),
         'data'   => $title . " (" . implode(", ", $outcomes) . ")",
       );
     }
@@ -435,7 +426,7 @@ class Session extends AbstractObject
       }
       return array(
         'type'   => 'dnsErrorMsgData',
-        'domain' => $this->stripTrailingDots((string)$report->attributes()->name),
+        'domain' => Idn::domain((string)$report->attributes()->name),
         'data'   => $title . " (" . implode(", ", $outcomes) . ")",
       );
     }
@@ -445,7 +436,7 @@ class Session extends AbstractObject
     if ($extdom !== null && isset($extdom->simpleMsgData->name)) {
       return array(
         'type'   => 'simpleMsgData',
-        'domain' => $this->stripTrailingDots((string)$extdom->simpleMsgData->name),
+        'domain' => Idn::domain((string)$extdom->simpleMsgData->name),
         'data'   => $title,
       );
     }
@@ -471,7 +462,7 @@ class Session extends AbstractObject
       }
       return array(
         'type'   => 'chgStatusMsgData',
-        'domain' => $this->stripTrailingDots((string)$change->name),
+        'domain' => Idn::domain((string)$change->name),
         'data'   => $title . " (" . implode(", ", $states) . ")",
       );
     }
@@ -485,7 +476,7 @@ class Session extends AbstractObject
       }
       return array(
         'type'   => 'dlgMsgData',
-        'domain' => $this->stripTrailingDots((string)$delegation->name),
+        'domain' => Idn::domain((string)$delegation->name),
         'data'   => $title . " (" . implode(", ", $nameservers) . ")",
       );
     }
@@ -499,7 +490,7 @@ class Session extends AbstractObject
       // SimpleXMLElement survives that only via __toString()
       return array(
         'type'   => (string)$transfer->trStatus . "Transfer",
-        'domain' => $this->stripTrailingDots((string)$transfer->name),
+        'domain' => Idn::domain((string)$transfer->name),
         'data'   => $title . ": from " . (string)$transfer->acID .
                     " (" . (string)$transfer->acDate . ") to " . (string)$transfer->reID .
                     " (" . (string)$transfer->reDate . ")",

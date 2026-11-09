@@ -31,7 +31,6 @@ final class Idn
         IDNA_ERROR_DOMAIN_NAME_TOO_LONG => 'name must not be longer than 253 octets in punycode',
         IDNA_ERROR_LEADING_HYPHEN => 'a label must not start with a hyphen',
         IDNA_ERROR_TRAILING_HYPHEN => 'a label must not end with a hyphen',
-        IDNA_ERROR_HYPHEN_3_4 => 'a label must not have hyphens in its third and fourth position unless it is a valid xn-- label',
         IDNA_ERROR_PUNYCODE => 'an xn-- label is not valid punycode',
         IDNA_ERROR_INVALID_ACE_LABEL => 'an xn-- label does not decode to a valid label',
         IDNA_ERROR_LEADING_COMBINING_MARK => 'a label must not start with a combining mark',
@@ -64,6 +63,14 @@ final class Idn
     }
 
     /**
+     * A domain's own name in the one form it is stored, compared and sent in:
+     * trimmed, no trailing dot, normalised.
+     */
+    public static function domain(string $name): string {
+        return self::normalize(rtrim(trim($name), '.'));
+    }
+
+    /**
      * The punycode form the registry compares by. A name with an IDNA error
      * validate() does not report itself comes back normalised but unencoded.
      */
@@ -85,6 +92,8 @@ final class Idn
         }
 
         [, $errors] = self::convert(self::normalize($name), true);
+        // the .it registry accepts hyphens in a label's 3rd and 4th position
+        $errors &= ~IDNA_ERROR_HYPHEN_3_4;
         if ($errors === 0) {
             return null;
         }

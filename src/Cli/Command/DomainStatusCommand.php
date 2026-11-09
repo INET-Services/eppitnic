@@ -44,6 +44,7 @@ final class DomainStatusCommand extends Command
         if ( ! in_array($state, self::STATES, true)) {
             throw new UsageError('state must be one of: ' . implode(', ', self::STATES));
         }
+        $names = self::domainList($names);
         if ($names === []) {
             throw new UsageError('give at least one domain name, or --file=PATH');
         }

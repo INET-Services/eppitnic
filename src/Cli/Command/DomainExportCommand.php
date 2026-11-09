@@ -128,7 +128,7 @@ final class DomainExportCommand extends Command
             $where[] = 'd.reseller_id = :reseller_id';
             $params[':reseller_id'] = $this->scope()->resellerId;
         }
-        if ($names = $this->names()) {
+        if ($names = $this->domainNames()) {
             $in = [];
             foreach (array_values($names) as $i => $name) {
                 $in[] = ":d{$i}";
@@ -149,7 +149,7 @@ final class DomainExportCommand extends Command
      * @return array<int, array<string, mixed>>
      */
     private function fromRegistry(): array {
-        $names = $this->names();
+        $names = $this->domainNames();
         if ($names === []) {
             throw new UsageError('--source=registry needs domain names, or --file=PATH');
         }
