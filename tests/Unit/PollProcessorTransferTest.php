@@ -58,7 +58,7 @@ final class PollProcessorTransferTest extends EppTestCase
 
         R::exec('CREATE TABLE messages (id INTEGER PRIMARY KEY, type TEXT, domain TEXT, ac_id TEXT, archived_time TEXT)');
         R::exec("CREATE TABLE transfers (id INTEGER PRIMARY KEY, reseller_id INTEGER, domain TEXT, registrant TEXT,
-                 techc TEXT, dns TEXT, status TEXT NOT NULL DEFAULT 'pending',
+                 authinfo TEXT, techc TEXT, dns TEXT, status TEXT NOT NULL DEFAULT 'pending',
                  attempts INTEGER NOT NULL DEFAULT 0, attempted_at TEXT, time TEXT)");
         R::exec('CREATE TABLE users (id INTEGER PRIMARY KEY, reseller_id INTEGER, email TEXT, active INTEGER DEFAULT 1,
                  notify_enabled INTEGER DEFAULT 1, notify_message_types TEXT, notify_fulltext TEXT)');

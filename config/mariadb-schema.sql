@@ -276,6 +276,9 @@ CREATE TABLE `transfers` (
   `techc`                 text,
   `dns`                   text,
   `registrant`            varchar(32) NOT NULL,
+  -- the code the request was made with: it lets the registry answer a query
+  -- about a domain another registrar still sponsors
+  `authinfo`              varchar(64) DEFAULT NULL,
   `status`                enum('pending','cancelled') NOT NULL DEFAULT 'pending',
   `time`                  timestamp DEFAULT CURRENT_TIMESTAMP,
   -- nameserver updates the registry refused after the transfer completed

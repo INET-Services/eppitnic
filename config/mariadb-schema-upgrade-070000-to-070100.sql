@@ -6,7 +6,8 @@
 -- users.token_lifetime, a user's own session duration (NULL = 15 minutes),
 -- users.email widened to 256 and unique, the password-reset tables, and
 -- passkeys: users.signin_requirement and its companions, the passkeys,
--- webauthn_challenges and authenticator_metadata tables, and their settings
+-- webauthn_challenges and authenticator_metadata tables, and their settings,
+-- and transfers.authinfo, the code a transfer-in was requested with
 -- ============================================================================
 
 ALTER TABLE `resellers`
@@ -142,6 +143,9 @@ INSERT IGNORE INTO `settings` (`key`, `value`) VALUES
   ('passkey_challenge_purge', '{"enabled":true,"frequency_minutes":1440,"last_run_at":null}'),
   ('passkey_metadata', '{"enabled":true,"frequency_minutes":1440,"last_run_at":null}'),
   ('passkey_metadata_blob', '{"serial":null,"next_update":null,"fetched_at":null}');
+
+ALTER TABLE `transfers`
+  ADD COLUMN IF NOT EXISTS `authinfo` varchar(64) DEFAULT NULL AFTER `registrant`;
 
 INSERT INTO `settings` (`key`, `value`) VALUES
   ('schema_version', '"070100"')

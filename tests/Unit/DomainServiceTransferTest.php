@@ -26,7 +26,7 @@ final class DomainServiceTransferTest extends EppTestCase
         R::exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, handle TEXT, reseller_id INTEGER)');
         R::exec('CREATE TABLE domains (id INTEGER PRIMARY KEY, domain TEXT)');
         R::exec("CREATE TABLE transfers (id INTEGER PRIMARY KEY, reseller_id INTEGER, domain TEXT UNIQUE,
-                 registrant TEXT NOT NULL, techc TEXT, dns TEXT, status TEXT NOT NULL DEFAULT 'pending', time TEXT,
+                 registrant TEXT NOT NULL, authinfo TEXT, techc TEXT, dns TEXT, status TEXT NOT NULL DEFAULT 'pending', time TEXT,
                  attempts INTEGER NOT NULL DEFAULT 0, attempted_at TEXT)");
         R::exec("INSERT INTO contacts (handle, reseller_id) VALUES ('REGI1234REGI5678', 2)");
     }
@@ -59,6 +59,7 @@ final class DomainServiceTransferTest extends EppTestCase
         $this->assertSame('pending', $row['status']);
         $this->assertSame([], unserialize($row['techc']), 'tech contacts are ignored');
         $this->assertSame($this->params()['ns'], unserialize($row['dns']));
+        $this->assertSame('SECRET1234567890', $row['authinfo'], 'the code the request was sent with');
     }
 
     public function testAnUnknownRegistrantIsRefusedBeforeTheRegistryHearsOfIt(): void {
@@ -91,5 +92,22 @@ final class DomainServiceTransferTest extends EppTestCase
         $this->assertSame(['pending', 'REGI1234REGI5678', 2], [$row['status'], $row['registrant'], (int) $row['reseller_id']]);
         $this->assertSame([], unserialize($row['techc']));
         $this->assertSame(['ns1.example.it'], unserialize($row['dns']));
+    }
+
+    public function testARequestStoresItsAuthinfoAndAReRequestReplacesIt(): void {
+        DomainService::recordTransferRequest('example-two.it', 'REGI1234REGI5678', [], 'FIRSTCODE1234567');
+        $this->assertSame('FIRSTCODE1234567', R::getCell('SELECT authinfo FROM transfers'));
+
+        R::exec("UPDATE transfers SET status = 'cancelled'");
+        DomainService::recordTransferRequest('example-two.it', 'REGI1234REGI5678', [], 'SECONDCODE123456');
+
+        $this->assertSame(1, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
+        $this->assertSame('SECONDCODE123456', R::getCell('SELECT authinfo FROM transfers'));
+    }
+
+    public function testARequestWithoutAuthinfoStoresNull(): void {
+        DomainService::recordTransferRequest('example-two.it', 'REGI1234REGI5678');
+
+        $this->assertNull(R::getCell('SELECT authinfo FROM transfers'));
     }
 }

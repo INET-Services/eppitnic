@@ -69,6 +69,11 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   on `domain info` (`--json` too), apart from the validated `ns`. `domain
   update` and PATCH on such a domain start from the pending set and send the
   whole configuration in one `add`.
+- A transfer-in request stores its authinfo. `GET /v1/domains/{name}` asks the
+  registry with it (a domain another registrar sponsors needs it) and adds
+  `transfer` (`status`, `requested_at`, the `ns` to apply; `null` otherwise).
+  If the registry cannot answer, it returns the `transfers` row as `stale`
+  instead of `404`. `.../transfer/cancel` uses the stored code when given none.
 
 ### Users and sessions
 
@@ -200,6 +205,9 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   fetch is the only outbound request passkeys make
   (`https://mds3.fidoalliance.org/`, redirected to `mds.fidoalliance.org`;
   both hosts, HTTPS).
+- Dependencies are on their latest minor releases, among them
+  `firebase/php-jwt` 7.2, `phpmailer/phpmailer` 7.2 and `slim/slim` 4.15.3;
+  `composer audit` reports no advisories.
 
 ### CLI
 
@@ -240,6 +248,7 @@ Schema `070100`, applied automatically:
 - New columns `users.token_lifetime`, `resellers.entitytype`,
   `resellers.dnssec_algorithm` and `resellers.dnssec_digesttype`.
 - New tables `password_resets` and `password_reset_attempts`.
+- New column `transfers.authinfo`, the code a transfer-in was requested with.
 - Passkeys: new columns `users.signin_requirement`,
   `users.passkey_enroll_open` and `users.webauthn_handle`; new tables `passkeys`, `webauthn_challenges` and
   `authenticator_metadata`; the settings `passkeys`, `passkey_challenge_purge`,

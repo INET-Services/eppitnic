@@ -112,7 +112,7 @@ final class DomainTransferCommand extends Command
                 }
 
                 if ( ! $dryRun) {
-                    $this->recordLocally($operation, $name, $registrants[$name], $scope);
+                    $this->recordLocally($operation, $name, $registrants[$name], $scope, $authinfo);
                 }
 
                 $this->record("{$name} transfer {$operation} accepted",
@@ -129,9 +129,9 @@ final class DomainTransferCommand extends Command
      * Cancel keeps the row, as `cancelled` -- the record that we wanted the
      * domain.
      */
-    private function recordLocally(string $operation, string $name, string $registrant, Scope $scope): void {
+    private function recordLocally(string $operation, string $name, string $registrant, Scope $scope, string $authinfo): void {
         if ($operation === 'request') {
-            DomainService::recordTransferRequest($name, $registrant);
+            DomainService::recordTransferRequest($name, $registrant, [], $authinfo);
             // what the reseller's daily quota counts, as the API writes it
             History::record('domains', 0, 'request', ['domain' => $name, 'kind' => 'transfer'], $scope->userId);
             return;

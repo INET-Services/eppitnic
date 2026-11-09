@@ -41,6 +41,39 @@ function domainToArray(Domain $domain): array {
 }
 
 /**
+ * A transfer-in request as GET /v1/domains/{name} reports it: its status, when
+ * it was asked (the server's local time) and the nameservers to apply once it
+ * completes.
+ */
+function transferToArray(array $row): array {
+    return [
+        'status'       => $row['status'],
+        'requested_at' => $row['time'],
+        'ns'           => DomainService::requestedNameserverList(SerializedColumn::toArray($row['dns'])),
+    ];
+}
+
+/**
+ * What is known of a transfer-in locally, in the domainToArray() shape: the
+ * registry reports nothing of a domain it still sponsors for someone else.
+ */
+function transferDomainToArray(array $row): array {
+    return [
+        'domain'     => $row['domain'],
+        'status'     => [],
+        'registrant' => $row['registrant'],
+        'admin'      => '',
+        'tech'       => [],
+        'ns'         => [],
+        'ns_pending' => [],
+        'authinfo'   => $row['authinfo'],
+        'dnssec'     => [],
+        'cr_date'    => null,
+        'ex_date'    => null,
+    ];
+}
+
+/**
  * the 403 every ownership check above answers with
  */
 function domainForbidden(Response $response, string $domain): Response {
@@ -199,27 +232,39 @@ $app->get('/v1/domains/{name}', function (Request $request, Response $response, 
     $name = $args['name'];
 
     // before the registry: its answer carries the authinfo, which is ours for
-    // every reseller's domain. 404 so another reseller's names don't leak
-    if ( ! Access::canAccessDomain($name, $scope, true)) {
+    // every reseller's domain. 404 so another reseller's names don't leak. A
+    // cancelled transfer-in is not accessible to canAccessDomain(), but shown
+    $transferIn = Access::transferIn($name, $scope);
+    if ($transferIn === null && ! Access::canAccessDomain($name, $scope, true)) {
         return Json::response($response, ['error' => "Domain '{$name}' not found"], 404);
     }
+    $transfer = $transferIn === null ? null : transferToArray($transferIn);
 
     // the registry is authoritative: its answer is returned as-is, never
     // overlaid with the local row -- loadDB() re-initializes before its lookup
-    // and leaves the object empty when that misses
-    try {
-        $domain = EppSession::run(function ($nic) use ($name) {
-            $domain = new Domain($nic);
-            return $domain->fetch($name) ? $domain : null;
-        }, $debug);
-    } catch (\RuntimeException $e) {
-        // registry unreachable -- indistinguishable from "not found" as far as
-        // this route is concerned, both fall through to the local fallback
-        $domain = null;
+    // and leaves the object empty when that misses. A transfer-in is asked
+    // with its request's code, or not at all without one
+    $domain = null;
+    if ($transferIn === null || ($transferIn['authinfo'] ?? '') !== '') {
+        try {
+            $domain = EppSession::run(function ($nic) use ($name, $transferIn) {
+                $domain = new Domain($nic);
+                return $domain->fetch($name, $transferIn['authinfo'] ?? null) ? $domain : null;
+            }, $debug);
+        } catch (\RuntimeException $e) {
+            // registry unreachable -- indistinguishable from "not found" as far as
+            // this route is concerned, both fall through to the local fallback
+            $domain = null;
+        }
     }
 
     if ($domain !== null) {
-        return Json::response($response, ['domain' => domainToArray($domain), 'stale' => false]);
+        return Json::response($response, ['domain' => domainToArray($domain), 'stale' => false, 'transfer' => $transfer]);
+    }
+
+    // a transfer-in only lives in `transfers`: never a 404
+    if ($transferIn !== null) {
+        return Json::response($response, ['domain' => transferDomainToArray($transferIn), 'stale' => true, 'transfer' => $transfer]);
     }
 
     // registry lookup failed: serve the last known local state, flagged as
@@ -232,7 +277,7 @@ $app->get('/v1/domains/{name}', function (Request $request, Response $response, 
         return Json::response($response, ['error' => "Domain '{$name}' not found"], 404);
     }
 
-    return Json::response($response, ['domain' => domainToArray($domain), 'stale' => true]);
+    return Json::response($response, ['domain' => domainToArray($domain), 'stale' => true, 'transfer' => null]);
 });
 
 $app->post('/v1/domains', function (Request $request, Response $response, array $args): Response {
@@ -695,7 +740,7 @@ $app->post('/v1/domains/{name}/transfer', function (Request $request, Response $
                 return ['ok' => false, 'error' => $domain->getError()];
             }
 
-            DomainService::recordTransferRequest($name, $registrant, $nameservers);
+            DomainService::recordTransferRequest($name, $registrant, $nameservers, $params['authinfo']);
             return ['ok' => true];
         }, $debug);
     } catch (\RuntimeException $e) {
@@ -723,6 +768,10 @@ foreach (['approve', 'reject', 'cancel'] as $transferAction) {
         // which exists only in `transfers`
         if ( ! Access::canAccessDomain($name, $scope, $transferAction === 'cancel')) {
             return domainForbidden($response, $name);
+        }
+        // a cancel without a code uses the one the request was made with
+        if ($authinfo === '' && $transferAction === 'cancel') {
+            $authinfo = (string) (Access::transferIn($name, $scope)['authinfo'] ?? '');
         }
 
         try {

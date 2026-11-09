@@ -44,6 +44,26 @@ final class Access
     }
 
     /**
+     * The caller's transfer-in request for a name, pending or cancelled, unless
+     * the domain is already stored as active, as in the domain list. An admin
+     * reaches any reseller's.
+     *
+     * @return array|null the `transfers` row, or null
+     */
+    public static function transferIn(string $domain, Scope $scope): ?array {
+        $where = ['domain = :domain'];
+        $bind = [':domain' => $domain];
+        if ( ! $scope->isAdmin()) {
+            $where[] = 'reseller_id = :reseller_id';
+            $bind[':reseller_id'] = $scope->resellerId;
+        }
+        return R::getRow("
+            SELECT domain, registrant, authinfo, dns, status, time
+            FROM transfers WHERE " . implode(' AND ', $where) . "
+              AND NOT EXISTS (SELECT 1 FROM domains d WHERE d.domain = transfers.domain AND d.active = 1)", $bind) ?: null;
+    }
+
+    /**
      * Whether another reseller already holds this domain -- the check for
      * claim-style operations (a transfer-in), where the caller is not expected to
      * own it yet but must not pull it away from another reseller either.

@@ -105,7 +105,8 @@ final class DomainService
                 self::recordTransferRequest(
                     $params['domain'],
                     $params['registrant'],
-                    $nameservers
+                    $nameservers,
+                    $domain->get('authinfo')
                 );
             } catch (\Throwable $e) {
                 $warnings[] = Warnings::localWrite("transfer of '{$params['domain']}'", $e->getMessage());
@@ -121,11 +122,14 @@ final class DomainService
      * so an earlier row for the name (a cancelled request) is replaced.
      *
      * @param array $ns nameservers to apply: nameserverEntries() output or names
+     * @param string|null $authinfo the code the request was made with: the
+     *              registry answers a query about the domain only with it
      */
-    public static function recordTransferRequest(string $name, string $registrant, array $ns = []): void {
+    public static function recordTransferRequest(string $name, string $registrant, array $ns = [], ?string $authinfo = null): void {
         $values = [
             ':reseller_id' => Domain::resellerOf($registrant),
             ':registrant'  => $registrant,
+            ':authinfo'    => $authinfo,
             ':techc'       => serialize([]),
             // a name alone when it carries no addresses
             ':dns'         => serialize(array_map(
@@ -137,15 +141,15 @@ final class DomainService
         if (R::getCell('SELECT id FROM transfers WHERE domain = ?', [$name])) {
             R::exec("
                 UPDATE transfers SET reseller_id = :reseller_id, registrant = :registrant,
-                    techc = :techc, dns = :dns, status = 'pending', time = CURRENT_TIMESTAMP,
+                    authinfo = :authinfo, techc = :techc, dns = :dns, status = 'pending', time = CURRENT_TIMESTAMP,
                     attempts = 0, attempted_at = NULL
                 WHERE domain = :domain
             ", $values);
             return;
         }
         R::exec("
-            INSERT INTO transfers (reseller_id, domain, registrant, techc, dns)
-            VALUES (:reseller_id, :domain, :registrant, :techc, :dns)
+            INSERT INTO transfers (reseller_id, domain, registrant, authinfo, techc, dns)
+            VALUES (:reseller_id, :domain, :registrant, :authinfo, :techc, :dns)
         ", $values);
     }
 
@@ -423,6 +427,27 @@ final class DomainService
                 $row[$ip['type'] === 'v6' ? 'ipv6' : 'ipv4'] ??= $ip['address'];
             }
             $list[] = $row;
+        }
+        return $list;
+    }
+
+    /**
+     * The nameservers a transfer-in will apply, as the API shows them:
+     * `transfers.dns` holds names, or {name, ip: string[]|null} entries.
+     *
+     * @return array list of {name, ipv4: string|null, ipv6: string|null}
+     */
+    public static function requestedNameserverList(array $stored): array {
+        $list = [];
+        foreach ($stored as $entry) {
+            $row = ['name' => (string) (is_array($entry) ? ($entry['name'] ?? '') : $entry), 'ipv4' => null, 'ipv6' => null];
+            foreach ((array) (is_array($entry) ? ($entry['ip'] ?? []) : []) as $address) {
+                $key = filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? 'ipv6' : 'ipv4';
+                $row[$key] ??= (string) $address;
+            }
+            if ($row['name'] !== '') {
+                $list[] = $row;
+            }
         }
         return $list;
     }

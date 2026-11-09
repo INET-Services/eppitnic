@@ -29,7 +29,7 @@ final class DomainTransferRequestTest extends EppTestCase
         R::exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, handle TEXT, reseller_id INTEGER)');
         R::exec('CREATE TABLE users (id INTEGER PRIMARY KEY, reseller_id INTEGER)');
         R::exec('CREATE TABLE transfers (id INTEGER PRIMARY KEY, reseller_id INTEGER, domain TEXT,
-                 registrant TEXT NOT NULL, techc TEXT, dns TEXT,
+                 registrant TEXT NOT NULL, authinfo TEXT, techc TEXT, dns TEXT,
                  status TEXT NOT NULL DEFAULT \'pending\', time TEXT,
                  attempts INTEGER NOT NULL DEFAULT 0, attempted_at TEXT)');
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -64,6 +64,16 @@ final class DomainTransferRequestTest extends EppTestCase
         $row = R::getRow('SELECT * FROM transfers');
         $this->assertSame('MINE1234MINE5678', $row['registrant']);
         $this->assertSame(2, (int) $row['reseller_id']);
+    }
+
+    public function testTheAuthinfoIsStoredAndAReRequestReplacesIt(): void {
+        $this->request(['--authinfo=SECRET1234567890', '--registrant=MINE1234MINE5678', 'request', 'example-one.it']);
+        $this->assertSame('SECRET1234567890', R::getCell('SELECT authinfo FROM transfers'));
+
+        $this->request(['--registrant=MINE1234MINE5678', 'request', 'example-one.it;OTHERCODE1234567']);
+
+        $this->assertSame(1, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
+        $this->assertSame('OTHERCODE1234567', R::getCell('SELECT authinfo FROM transfers'));
     }
 
     public function testAFileRowCarriesItsOwnRegistrant(): void {

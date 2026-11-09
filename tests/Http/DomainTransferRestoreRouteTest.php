@@ -40,7 +40,7 @@ final class DomainTransferRestoreRouteTest extends EppTestCase
         R::exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, handle TEXT, reseller_id INTEGER, name TEXT, email TEXT)');
         R::exec('CREATE TABLE domains (id INTEGER PRIMARY KEY, domain TEXT, reseller_id INTEGER, active INTEGER DEFAULT 1)');
         R::exec('CREATE TABLE transfers (id INTEGER PRIMARY KEY, reseller_id INTEGER, domain TEXT,
-                 registrant TEXT NOT NULL, techc TEXT, dns TEXT,
+                 registrant TEXT NOT NULL, authinfo TEXT, techc TEXT, dns TEXT,
                  status TEXT NOT NULL DEFAULT \'pending\', time TEXT,
                  attempts INTEGER NOT NULL DEFAULT 0, attempted_at TEXT)');
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -124,6 +124,40 @@ final class DomainTransferRestoreRouteTest extends EppTestCase
         $row = R::getRow('SELECT * FROM transfers');
         $this->assertSame('MINE1234MINE5678', $row['registrant']);
         $this->assertSame(2, (int) $row['reseller_id']);
+    }
+
+    public function testTransferStoresTheAuthinfoAndAReRequestReplacesIt(): void {
+        $this->post('/v1/domains/new.it/transfer', ['authinfo' => 'SECRET1234567890', 'registrant' => 'MINE1234MINE5678']);
+        $this->assertSame('SECRET1234567890', R::getCell('SELECT authinfo FROM transfers'));
+
+        R::exec("UPDATE transfers SET status = 'cancelled'");
+        $this->post('/v1/domains/new.it/transfer', ['authinfo' => 'OTHERCODE1234567', 'registrant' => 'MINE1234MINE5678']);
+
+        $this->assertSame(1, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
+        $this->assertSame('OTHERCODE1234567', R::getCell('SELECT authinfo FROM transfers'));
+    }
+
+    public function testCancelWithoutAuthinfoSendsTheStoredOne(): void {
+        $this->post('/v1/domains/new.it/transfer', ['authinfo' => 'SECRET1234567890', 'registrant' => 'MINE1234MINE5678']);
+
+        $response = $this->post('/v1/domains/new.it/transfer/cancel');
+
+        $this->assertSame(200, $response->getStatusCode());
+        // the registry session of the cancel: each call opens its own
+        $sent = $this->byServer[array_key_first($this->byServer)]->requests;
+        $this->assertStringContainsString('<domain:pw>SECRET1234567890</domain:pw>', implode('', $sent));
+        $this->assertSame('cancelled', R::getCell('SELECT status FROM transfers'));
+    }
+
+    public function testCancelPrefersTheAuthinfoItIsGiven(): void {
+        $this->post('/v1/domains/new.it/transfer', ['authinfo' => 'SECRET1234567890', 'registrant' => 'MINE1234MINE5678']);
+
+        $this->post('/v1/domains/new.it/transfer/cancel', ['authinfo' => 'GIVEN12345678901']);
+
+        // the registry session of the cancel: each call opens its own
+        $sent = $this->byServer[array_key_first($this->byServer)]->requests;
+        $this->assertStringContainsString('<domain:pw>GIVEN12345678901</domain:pw>', implode('', $sent));
+        $this->assertStringNotContainsString('SECRET1234567890', implode('', $sent));
     }
 
     public function testCancelKeepsTheRowAsCancelled(): void {
