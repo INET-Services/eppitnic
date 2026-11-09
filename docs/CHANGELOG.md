@@ -3,9 +3,10 @@
 ## Version 7.1.0
 7.1 makes the backend compatible with the .it Registry Technical Guidelines
 v4.0: no administrative or technical contacts, no fax number, and `name`
-equal to `org` on every contact. It also adds password reset by e-mail,
-per-user session lengths and CLI verbs for user and contact housekeeping. The
-schema upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
+equal to `org` on every contact. It also adds passkeys with a sign-in
+requirement per user, password reset by e-mail, per-user session lengths and
+CLI verbs for user and contact housekeeping. It needs PHP 8.2. The schema
+upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
 
 ### Registry Technical Guidelines v4.0
 
@@ -97,6 +98,109 @@ schema upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   not allowed, session limit; API `502`), and drops the shared registry
   session afterwards so the next call logs in with the new password.
 
+### Passkeys and sign-in requirements
+
+- Passkeys (WebAuthn) are voluntary for everyone: any user may register up to
+  10 and sign in with one, without typing a username
+  (`POST /v1/users/authenticate/passkey/options`, then `POST
+  /v1/users/authenticate/passkey`). A key must verify the user (PIN or
+  biometrics). What a user *must* have is their **sign-in requirement**,
+  `users.signin_requirement`, set by `POST`/`PUT /v1/users` and `user
+  signin-requirement`. New users, and the first admin `eppitnic setup`
+  creates, get `totp`.
+- `passkey`: the user sets up a passkey. Until one exists the password (with
+  its code) gives no session, only the setup (`403` `passkey_enrollment`);
+  once it does, the password, with or without a code, is refused (`403`
+  `passkey`), on safe networks too. For a fallback, use `totp_or_passkey`.
+- `totp` (default): password and code outside `safe_networks`, password alone
+  inside; a passkey signs in too. A password alone from outside is refused.
+- `totp_or_passkey`: the user sets up the authenticator app **and** a
+  passkey, then signs in with password and code, or with the passkey.
+- `none`: nothing is required; the password signs in until the user has a
+  compliant passkey and no authenticator app, then only the passkey does
+  (`403` `passkey`), on safe networks too. Only an admin sets it (a manager
+  gets `403`), and it is recorded as the security event
+  `signin_requirement_none`.
+- `safe_networks` skip only the TOTP code and its enrolment, never a passkey:
+  `passkey` and `totp_or_passkey` need their keys wherever the user is.
+- A user registers keys from a session, confirming with a step-up (below).
+  While signing in, a key is registered with the TOTP code just checked, or
+  on the password alone while the account's `passkey_enroll_open` flag is set
+  (a requirement that asks for a key the user has not got, `signin-reset`, a
+  sysop's `passkey-revoke`, a new relying party). Otherwise the answer is
+  `403` `signin_reset`, "Ask an administrator to reset your sign-in".
+- Every sign-in answer without a token names what is missing in `required`:
+  `password_change`, `mfa_enrollment`, `passkey_enrollment` (with
+  `passkeys_needed`, `passkeys_have` and `passkeys_available`), `passkey` or
+  `signin_reset`. An open session owing the same gets the matching `403` on
+  its next request.
+- Session claims: `amr` (`pwd`, `pwd+otp` or `passkey`), `strong_auth` (not
+  `pwd`), `cred` (a passkey session's key), `has_passkeys` and
+  `needs_second_factor`, the last telling a client that the MFA gate would
+  refuse this session. The MFA gate accepts a passkey session and refuses a
+  password-only one once the account has TOTP or a compliant passkey. A
+  passkey session ends (`401`) when its key is removed or stops meeting the
+  passkey policy; remote authentication and fixed API tokens are not affected.
+- Management: `GET /v1/users/{id}/passkeys` (the user, their manager or an
+  admin), `POST .../passkeys/options` and `POST .../passkeys` to add a key and
+  `PATCH .../{pid}` to rename it (the user only, nobody registers a key for
+  someone else), `DELETE .../{pid}` (the user with a step-up, or their manager
+  or admin). Removing the last compliant key of a user whose requirement
+  needs one is refused. `POST
+  /v1/users/{id}/signin-reset` (manager, admin) removes every passkey and the
+  TOTP secret, sets a temporary password and opens the enrolment again.
+- A step-up is a fresh proof in the same request: an assertion from a
+  compliant passkey if the user has one, else a TOTP code, else the password
+  (`POST /v1/users/{id}/passkeys/stepup` makes the options). It guards adding
+  and removing one's own keys, removing one's own TOTP under `passkey`, and
+  an admin's loosening of their own requirement.
+- Nobody loosens their own requirement (`passkey`, `totp_or_passkey`, `totp`,
+  `none`, strongest first) except an admin, who confirms with a step-up
+  (security event `signin_requirement_loosened`); managers and users get
+  `400`. A manager cannot set `none` and cannot reach an admin. A
+  requirement that asks for keys is refused while passkeys are off.
+- The passkey policy is one global setting, `GET`/`PUT /v1/settings/passkeys`
+  (admin) and `config passkeys`: the relying party `rp_id` (a host name, never
+  an IP address) and its `origins`, `type` `any` (any authenticator) or
+  `device_bound`, and for `device_bound` the accepted `models` (YubiKey,
+  Google Titan, Windows Hello, ...) and `extra_aaguids`. An empty `rp_id`
+  switches passkeys off.
+- `device_bound` asks the authenticator for attestation and accepts a key only
+  if the attestation chains to a root FIDO's metadata lists for its model,
+  the key cannot sync and the model is allowed (none selected: any attested
+  model). Models the metadata marks revoked or compromised stop counting. Every
+  stored key is judged against the current policy at sign-in and on every
+  session request.
+- `passkey_metadata` downloads and verifies the FIDO MDS3 BLOB daily
+  (`passkey metadata`, or `--file=` offline); without current metadata no
+  `device_bound` key can be registered, and keys already registered keep
+  working. `cron run` skips the job while passkeys are off.
+- `POST /v1/settings/passkeys/impact` previews a change: keys that stop
+  complying and users who need to register again (`needs_enrolment`) or are
+  locked out (`locked_out`). `PUT` refuses a change after which no active
+  admin could sign in. Changing or clearing `rp_id` deletes every registered
+  key and needs `"confirm": true` (`confirm_required`).
+- Security events: `passkey_registered`, `passkey_registration_failed`,
+  `passkey_removed`, `passkey_counter_regression`, `stepup_failed`,
+  `signin_reset`, `signin_requirement_none`, `signin_requirement_loosened`,
+  `passkey_policy_changed` and `passkeys_invalidated`; `login_succeeded`
+  records the `method`. A signature counter that does not move forward (a
+  constant 0, as synced keys send, is accepted) refuses the sign-in. The
+  policy itself is recorded under `history.object` `passkeys`.
+- `must_enroll_mfa` is accepted on `POST`/`PUT /v1/users` and ignored (the
+  column stays, unused); `GET /v1/users` no longer returns it. `user create
+  --must-enroll-mfa` is gone, replaced by `--signin-requirement`.
+- Scheduled jobs `passkey_challenge_purge` and `passkey_metadata`, daily and
+  on by default (`GET`/`PATCH /v1/cronjobs`, `config passkey-purge-set`,
+  `config passkey-metadata-set`); `passkey_metadata` does nothing while
+  passkeys are off.
+- PHP 8.2 or later (`composer.json` `php`), and new dependencies:
+  `web-auth/webauthn-lib`, `spomky-labs/pki-framework` and `psr/clock`
+  (`symfony/clock` and `spomky-labs/cbor-php` for the tests). The metadata
+  fetch is the only outbound request passkeys make
+  (`https://mds3.fidoalliance.org/`, redirected to `mds.fidoalliance.org`;
+  both hosts, HTTPS).
+
 ### CLI
 
 - `user create` requires `--email`.
@@ -105,8 +209,21 @@ schema upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   apply the API's password policy and its last-admin, last-manager and reach
   rules, shared in `UserRules`, and record history without the password.
 - `user mfa-reset` removes a user's MFA like `DELETE /v1/users/{id}/totp`
-  (same reach rules, shared in `UserRules`); `--must-enroll-mfa` also requires
-  enrolling again at the next login outside the safe networks.
+  (same reach rules, shared in `UserRules`); whether the user must set it up
+  again is their sign-in requirement's to say.
+- `user signin-requirement <user> <mode>` sets how a user signs in, under the
+  rules of `PUT /v1/users/{id}`; `user create` takes `--signin-requirement`.
+- `user passkeys`, `user passkey-revoke` and `user signin-reset` are sysop
+  tools that reach any user and need no one able to sign in:
+  `signin-reset` is the way back when every admin is locked out (passkeys and
+  TOTP removed, temporary password from `--password`, `--password-stdin`,
+  `--generate` or a prompt, `--requirement` to change the mode too).
+- `config passkeys` shows and sets the passkey policy (`--rp-id`, `--origin`,
+  `--type`, `--model`, `--extra-aaguid`, `--confirm`); `config
+  passkey-purge-set` and `config passkey-metadata-set` set the two jobs.
+- `passkey purge` deletes expired WebAuthn challenges; `passkey metadata`
+  fetches and verifies the FIDO MDS3 BLOB, or imports one with `--file=`
+  (exit code `80`: not fetched, `81`: refused).
 - `config epp-password` takes the password as `<new-password>`,
   `--password-stdin` or, at a terminal, a hidden prompt asked twice.
 - `contact cleanup` clears `admin` and `tech` on domains, then deletes the
@@ -123,6 +240,12 @@ Schema `070100`, applied automatically:
 - New columns `users.token_lifetime`, `resellers.entitytype`,
   `resellers.dnssec_algorithm` and `resellers.dnssec_digesttype`.
 - New tables `password_resets` and `password_reset_attempts`.
+- Passkeys: new columns `users.signin_requirement`,
+  `users.passkey_enroll_open` and `users.webauthn_handle`; new tables `passkeys`, `webauthn_challenges` and
+  `authenticator_metadata`; the settings `passkeys`, `passkey_challenge_purge`,
+  `passkey_metadata` and `passkey_metadata_blob`; `history.object` gains
+  `passkeys`. Users with a TOTP secret or `must_enroll_mfa` set become `totp`,
+  every other existing user `none`.
 - The users.email upgrade turns empty addresses into NULL and, where several
   users share one, keeps it on the lowest id and clears it on the others,
   recording each in `history` ("duplicate address removed by the 7.1

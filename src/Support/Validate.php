@@ -48,6 +48,17 @@ final class Validate
     ];
 
     /**
+     * passkeys table column widths; mirrors config/mariadb-schema.sql, which a
+     * unit test enforces
+     */
+    public const PASSKEY_FIELD_MAX_LENGTHS = [
+        'attestation_format' => 32,
+        'transports'         => 128,
+        'name'               => 64,
+        'last_used_ip'       => 45,
+    ];
+
+    /**
      * domains table column widths; mirrors config/mariadb-schema.sql, which a
      * unit test enforces
      */

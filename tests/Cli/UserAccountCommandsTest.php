@@ -331,10 +331,9 @@ final class UserAccountCommandsTest extends TestCase
 
         $this->assertSame(0, $code);
         $this->assertSame("MFA removed for 'alice'\n", $output);
-        $row = R::getRow('SELECT totp_secret, totp_secret_pending, must_enroll_mfa FROM users WHERE id = 3');
+        $row = R::getRow('SELECT totp_secret, totp_secret_pending FROM users WHERE id = 3');
         $this->assertNull($row['totp_secret']);
         $this->assertNull($row['totp_secret_pending']);
-        $this->assertSame(0, (int) $row['must_enroll_mfa']);
     }
 
     public function testMfaResetHistoryNeverHoldsTheSecret(): void {
@@ -350,23 +349,19 @@ final class UserAccountCommandsTest extends TestCase
         $this->assertStringNotContainsString('PENDINGSECRET234', $rows[0]['data']);
     }
 
-    public function testMfaResetCanRequireEnrolmentAgain(): void {
-        $this->withMfa(3);
-
-        [, $output] = $this->exec(new UserMfaResetCommand(['--user=2', '--must-enroll-mfa', 'alice']));
-
-        $this->assertSame("MFA removed for 'alice', must set it up again at the next login\n", $output);
-        $this->assertSame(1, (int) R::getCell('SELECT must_enroll_mfa FROM users WHERE id = 3'));
-        $this->assertSame(1, json_decode($this->history(3)[0]['data'], true)['must_enroll_mfa']);
-    }
-
     public function testMfaResetOfAUserWithoutMfaChangesNothing(): void {
-        [$code, $output] = $this->exec(new UserMfaResetCommand(['--user=2', '--must-enroll-mfa', 'alice']));
+        [$code, $output] = $this->exec(new UserMfaResetCommand(['--user=2', 'alice']));
 
         $this->assertSame(0, $code);
         $this->assertSame("'alice' has no MFA\n", $output);
         $this->assertSame([], $this->history(3));
-        $this->assertSame(0, (int) R::getCell('SELECT must_enroll_mfa FROM users WHERE id = 3'));
+    }
+
+    public function testMfaResetNoLongerTakesTheOldEnrolmentFlag(): void {
+        $this->expectException(UsageError::class);
+        $this->expectExceptionMessage("unknown option '--must-enroll-mfa'");
+
+        $this->exec(new UserMfaResetCommand(['--user=2', '--must-enroll-mfa', 'alice']));
     }
 
     public function testMfaResetByAnAdminOnAnyUserAndOnSelf(): void {

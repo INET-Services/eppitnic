@@ -31,12 +31,14 @@ final class CronjobSettingsTest extends EppTestCase
             'domain_sync' => ['enabled' => false, 'batch_size' => 25, 'cursor_id' => 7, 'frequency_minutes' => 5, 'last_run_at' => null],
             'domain_reap_deletions' => ['enabled' => true, 'frequency_minutes' => 15, 'last_run_at' => null],
             'poll_process' => ['enabled' => true, 'frequency_minutes' => 5, 'last_run_at' => null],
+            'passkey_challenge_purge' => ['enabled' => true, 'frequency_minutes' => 1440, 'last_run_at' => null],
+            'passkey_metadata' => ['enabled' => true, 'frequency_minutes' => 1440, 'last_run_at' => null],
         ]);
     }
 
     public function testJobsListsEveryRegisteredJob(): void {
         $this->assertSame(
-            ['pdns', 'domain_sync', 'domain_reap_deletions', 'poll_process', 'keepalive'],
+            ['pdns', 'domain_sync', 'domain_reap_deletions', 'poll_process', 'passkey_challenge_purge', 'passkey_metadata', 'keepalive'],
             CronjobSettings::jobs()
         );
     }
@@ -118,6 +120,12 @@ final class CronjobSettingsTest extends EppTestCase
         $this->assertSame(5, Config::get('poll_process')['frequency_minutes']);
         CronjobSettings::set('domain_reap_deletions', ['frequency_minutes' => null], 1);
         $this->assertSame(15, Config::get('domain_reap_deletions')['frequency_minutes']);
+        CronjobSettings::set('passkey_challenge_purge', ['frequency_minutes' => 60], 1);
+        CronjobSettings::set('passkey_challenge_purge', ['frequency_minutes' => null], 1);
+        $this->assertSame(1440, Config::get('passkey_challenge_purge')['frequency_minutes']);
+        CronjobSettings::set('passkey_metadata', ['frequency_minutes' => 60], 1);
+        CronjobSettings::set('passkey_metadata', ['frequency_minutes' => null], 1);
+        $this->assertSame(1440, Config::get('passkey_metadata')['frequency_minutes']);
         CronjobSettings::set('keepalive', ['enabled' => true], 1);
         $this->assertSame(['enabled' => false], CronjobSettings::set('keepalive', ['enabled' => null], 1));
     }

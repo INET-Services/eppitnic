@@ -3,6 +3,8 @@
 namespace Eppitnic\Cli\Command;
 
 use Eppitnic\Cli\Command;
+use Eppitnic\Cli\UsageError;
+use Eppitnic\Support\PasswordGenerator;
 use RedBeanPHP\R;
 
 /**
@@ -23,5 +25,29 @@ abstract class UserAccountCommand extends Command
             $row = R::getRow('SELECT * FROM users WHERE id = ?', [(int) $ref]);
         }
         return empty($row) ? null : $row;
+    }
+
+    /**
+     * From exactly one of --password, --password-stdin, --generate; else asked
+     * for twice, hidden, at a terminal.
+     */
+    protected function newPassword(): string {
+        $given = array_filter(['password', 'password-stdin', 'generate'], fn($o) => $this->hasOption($o));
+        if (count($given) > 1) {
+            throw new UsageError('give only one of --password, --password-stdin and --generate');
+        }
+        if ($this->hasOption('password')) {
+            return (string) $this->option('password');
+        }
+        if ($this->hasOption('generate')) {
+            return (new PasswordGenerator(20, true, requireNumber: true))->get();
+        }
+        if ($this->hasOption('password-stdin')) {
+            return $this->readPasswordStdin();
+        }
+        if ( ! stream_isatty(STDIN)) {
+            throw new UsageError('give one of --password, --password-stdin or --generate');
+        }
+        return $this->promptNewPassword();
     }
 }

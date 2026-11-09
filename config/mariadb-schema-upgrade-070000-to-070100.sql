@@ -4,7 +4,9 @@
 -- (NULL = no default; the form falls back to company, 13 and 2), and the
 -- contact email and regcode columns widened to the registry's limits, and
 -- users.token_lifetime, a user's own session duration (NULL = 15 minutes),
--- users.email widened to 256 and unique, and the password-reset tables
+-- users.email widened to 256 and unique, the password-reset tables, and
+-- passkeys: users.signin_requirement and its companions, the passkeys,
+-- webauthn_challenges and authenticator_metadata tables, and their settings
 -- ============================================================================
 
 ALTER TABLE `resellers`
@@ -62,6 +64,84 @@ CREATE TABLE IF NOT EXISTS `password_reset_attempts` (
   KEY (`network`, `created_at`),
   KEY (`email_hash`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- The default 'none' marks signin_requirement as not yet migrated: the UPDATE
+-- runs only while it is set, SET DEFAULT 'totp' ends it, so a re-run leaves
+-- every user alone.
+ALTER TABLE `users`
+  ADD COLUMN IF NOT EXISTS `signin_requirement` enum('passkey','totp','totp_or_passkey','none') NOT NULL DEFAULT 'none' AFTER `must_enroll_mfa`,
+  ADD COLUMN IF NOT EXISTS `passkey_enroll_open` tinyint NOT NULL DEFAULT 0 AFTER `signin_requirement`,
+  ADD COLUMN IF NOT EXISTS `webauthn_handle` varbinary(64) NULL AFTER `passkey_enroll_open`,
+  ADD UNIQUE KEY IF NOT EXISTS `webauthn_handle` (`webauthn_handle`);
+
+UPDATE `users` SET `signin_requirement` = 'totp'
+  WHERE ((`totp_secret` IS NOT NULL AND `totp_secret` <> '') OR `must_enroll_mfa` = 1)
+    AND EXISTS (SELECT 1 FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+                  AND COLUMN_NAME = 'signin_requirement' AND COLUMN_DEFAULT LIKE '%none%');
+
+ALTER TABLE `users` ALTER COLUMN `signin_requirement` SET DEFAULT 'totp';
+
+ALTER TABLE `history`
+  MODIFY COLUMN `object` enum('users', 'contacts', 'domains', 'security', 'cronjobs', 'epp', 'smtp', 'remote_auth', 'trusted_proxies', 'resellers', 'region', 'allowed_origins', 'debugfile', 'dnssec', 'passkeys') NOT NULL;
+
+CREATE TABLE IF NOT EXISTS `passkeys` (
+  `id`                    serial,
+  `user_id`               bigint unsigned NOT NULL,
+  `credential_id`         varbinary(1023) NOT NULL,
+  `source`                longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`source`)),
+  `aaguid`                char(36) NOT NULL,
+  `sign_count`            int unsigned NOT NULL DEFAULT 0,
+  `backup_eligible`       tinyint NOT NULL DEFAULT 0,
+  `backup_state`          tinyint NOT NULL DEFAULT 0,
+  `attestation_format`    varchar(32) NOT NULL,
+  `attestation_verified`  tinyint NOT NULL DEFAULT 0,
+  `transports`            varchar(128) NULL,
+  `name`                  varchar(64) NOT NULL,
+  `created_at`            datetime NOT NULL,
+  `last_used_at`          datetime NULL,
+  `last_used_ip`          varchar(45) NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY (`credential_id`),
+  KEY (`user_id`),
+  CONSTRAINT FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `webauthn_challenges` (
+  `id`              serial,
+  `purpose`         enum('register','login','stepup') NOT NULL,
+  `user_id`         bigint unsigned NULL,
+  `challenge_hash`  char(64) NOT NULL,
+  `context`         varchar(16) NULL,
+  `created_at`      datetime NOT NULL,
+  `expires_at`      datetime NOT NULL,
+  `used_at`         datetime NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY (`challenge_hash`),
+  KEY (`expires_at`),
+  KEY (`user_id`),
+  CONSTRAINT FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- tables created by an earlier run of this file lack these
+ALTER TABLE `webauthn_challenges`
+  ADD COLUMN IF NOT EXISTS `context` varchar(16) NULL AFTER `challenge_hash`,
+  ADD UNIQUE KEY IF NOT EXISTS `challenge_hash` (`challenge_hash`);
+
+CREATE TABLE IF NOT EXISTS `authenticator_metadata` (
+  `aaguid`       char(36) NOT NULL,
+  `description`  varchar(255) NULL,
+  `status`       varchar(64) NULL,
+  `entry`        longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`entry`)),
+  `updated_at`   datetime NOT NULL,
+  PRIMARY KEY (`aaguid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO `settings` (`key`, `value`) VALUES
+  ('passkeys', '{"rp_id":"","origins":[],"type":"any","models":[],"extra_aaguids":[]}'),
+  ('passkey_challenge_purge', '{"enabled":true,"frequency_minutes":1440,"last_run_at":null}'),
+  ('passkey_metadata', '{"enabled":true,"frequency_minutes":1440,"last_run_at":null}'),
+  ('passkey_metadata_blob', '{"serial":null,"next_update":null,"fetched_at":null}');
 
 INSERT INTO `settings` (`key`, `value`) VALUES
   ('schema_version', '"070100"')

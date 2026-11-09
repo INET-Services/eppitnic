@@ -5,7 +5,6 @@ namespace Eppitnic\Cli\Command;
 use Eppitnic\Cli\UsageError;
 use Eppitnic\Persistence\History;
 use Eppitnic\Persistence\UserRules;
-use Eppitnic\Support\PasswordGenerator;
 use Eppitnic\Support\PasswordPolicy;
 use RedBeanPHP\R;
 
@@ -79,29 +78,5 @@ final class UserPasswordCommand extends UserAccountCommand
         }
         $this->record($text, $record);
         return 0;
-    }
-
-    /**
-     * From exactly one of --password, --password-stdin, --generate; else asked
-     * for twice, hidden, at a terminal.
-     */
-    private function newPassword(): string {
-        $given = array_filter(['password', 'password-stdin', 'generate'], fn($o) => $this->hasOption($o));
-        if (count($given) > 1) {
-            throw new UsageError('give only one of --password, --password-stdin and --generate');
-        }
-        if ($this->hasOption('password')) {
-            return (string) $this->option('password');
-        }
-        if ($this->hasOption('generate')) {
-            return (new PasswordGenerator(20, true, requireNumber: true))->get();
-        }
-        if ($this->hasOption('password-stdin')) {
-            return $this->readPasswordStdin();
-        }
-        if ( ! stream_isatty(STDIN)) {
-            throw new UsageError('give one of --password, --password-stdin or --generate');
-        }
-        return $this->promptNewPassword();
     }
 }

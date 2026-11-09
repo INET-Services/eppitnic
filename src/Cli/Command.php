@@ -28,6 +28,9 @@ abstract class Command
     /** positional arguments left after the options */
     protected array $arguments = [];
 
+    /** every value of each valued option, for one given more than once */
+    private array $values = [];
+
     /** collected output rows, for --json */
     private array $records = [];
 
@@ -171,6 +174,9 @@ abstract class Command
             }
 
             $this->options[$body] = $value;
+            if ($valued[$body]) {
+                $this->values[$body][] = $value;
+            }
         }
     }
 
@@ -180,6 +186,11 @@ abstract class Command
 
     protected function option(string $name, mixed $default = null): mixed {
         return $this->options[$name] ?? $default;
+    }
+
+    /** @return string[] each value of an option given any number of times */
+    protected function optionValues(string $name): array {
+        return $this->values[$name] ?? [];
     }
 
     protected function hasOption(string $name): bool {
@@ -499,7 +510,12 @@ abstract class Command
      * Written straight to the stream so an output buffer cannot swallow them.
      */
     protected function warn(string $text): void {
-        fwrite($this->errorStream ?? STDERR, $text . "\n");
+        fwrite($this->errorStream(), $text . "\n");
+    }
+
+    /** @return resource where warn() writes, for a command that runs others */
+    protected function errorStream() {
+        return $this->errorStream ?? STDERR;
     }
 
     /**

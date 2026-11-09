@@ -22,7 +22,7 @@ final class DomainDnssecTest extends EppTestCase
     }
 
     /** a domain whose registry copy holds two DS records */
-    private function fetchedWithTwoKeys(): Domain {
+    private function fetchedWithTwoDnskeys(): Domain {
         $dsData = '';
         foreach ([self::OLD_A => 11, self::OLD_B => 12] as $digest => $tag) {
             $dsData .= "<secDNS:dsData><secDNS:keyTag>{$tag}</secDNS:keyTag><secDNS:alg>10</secDNS:alg>"
@@ -42,7 +42,7 @@ final class DomainDnssecTest extends EppTestCase
     }
 
     public function testReplacingBothKeysRemovesThenAddsAndSendsBoth(): void {
-        $domain = $this->fetchedWithTwoKeys();
+        $domain = $this->fetchedWithTwoDnskeys();
 
         $records = DomainService::dnssecRecords([self::ds(self::NEW_A, 21), self::ds(self::NEW_B, 22)]);
         $this->assertNull(DomainService::applyDnssec($domain, $records));
@@ -59,7 +59,7 @@ final class DomainDnssecTest extends EppTestCase
     }
 
     public function testAnUnchangedKeyIsKeptAndNotResent(): void {
-        $domain = $this->fetchedWithTwoKeys();
+        $domain = $this->fetchedWithTwoDnskeys();
 
         $records = DomainService::dnssecRecords([self::ds(self::OLD_A, 11), self::ds(self::NEW_A, 21)]);
         $this->assertNull(DomainService::applyDnssec($domain, $records));
@@ -70,7 +70,7 @@ final class DomainDnssecTest extends EppTestCase
     }
 
     public function testAnAddTheRegistryCannotHoldIsReportedNotDropped(): void {
-        $domain = $this->fetchedWithTwoKeys();
+        $domain = $this->fetchedWithTwoDnskeys();
         $records = DomainService::dnssecRecords([
             self::ds(self::OLD_A, 11), self::ds(self::OLD_B, 12), self::ds(self::NEW_A, 21),
         ]);
@@ -110,7 +110,7 @@ final class DomainDnssecTest extends EppTestCase
 
     /** what the API returns is what PATCH accepts, so it can be sent back */
     public function testAFetchedSetListsInThePatchShape(): void {
-        $list = DomainService::dnssecList($this->fetchedWithTwoKeys()->get('dnssec'));
+        $list = DomainService::dnssecList($this->fetchedWithTwoDnskeys()->get('dnssec'));
 
         $this->assertSame([
             ['keytag' => '11', 'algorithm' => '10', 'digesttype' => '2', 'digest' => self::OLD_A],

@@ -7,7 +7,7 @@ schedule one cron line. To run it in containers instead, see
 
 ## Quick start
 
-You need PHP 8.1 or later with the curl, XML, PDO MySQL and intl extensions,
+You need PHP 8.2 or later with the curl, XML, PDO MySQL and intl extensions,
 [Composer](https://getcomposer.org/), MariaDB or MySQL, a web server with
 TLS, and the credentials of your nic.it EPP account.
 
@@ -83,6 +83,11 @@ Ubuntu), and `<YOUR_HOSTNAME>` the virtual host's name.
      -d '{"username":"<ADMIN_USERNAME>","password":"<ADMIN_PASSWORD>"}' | jq -r .token
    ```
 
+   The first admin starts on the sign-in requirement `totp`. From outside
+   `safe_networks` (by default, anywhere but this server) the answer is `403`
+   `mfa_enrollment` until the authenticator app is set up; see "Forced
+   password change and MFA enrollment" in [API.md](API.md).
+
 3. Check the stored EPP configuration (local only, no registry contact):
 
    ```bash
@@ -113,6 +118,8 @@ Ubuntu), and `<YOUR_HOSTNAME>` the virtual host's name.
   limiting").
 - Every browser client needs its origin in `allowed_origins`, including a
   frontend on the API's own host (see "Configuration").
+- To let users sign in with passkeys, set the relying party (see "Passkeys and
+  sign-in requirements").
 - To exercise the whole registry lifecycle against the public test registry,
   run `selftest` (see "Test against the live test registry" in
   [TESTING.md](TESTING.md)).
@@ -367,7 +374,7 @@ echo "$NEW" | bin/eppitnic user password jdoe --password-stdin --must-change-pas
 bin/eppitnic user password jdoe                          # asks twice, no echo
 bin/eppitnic user deactivate jdoe mroe                   # already inactive is a no-op
 bin/eppitnic user activate jdoe
-bin/eppitnic user mfa-reset jdoe --must-enroll-mfa       # no code at login, enrol again
+bin/eppitnic user mfa-reset jdoe                         # remove the code
 ```
 
 `user password` takes one of `--password=VALUE`, `--password-stdin` or
@@ -376,9 +383,11 @@ tokens valid; `--must-change-password` forces a change at next login.
 
 `user mfa-reset` removes the TOTP secret and any pending enrolment, as
 `DELETE /v1/users/{id}/totp` does, for yourself, your reseller's users (as a
-manager) or anyone (as an admin). `--must-enroll-mfa` also makes the user set
-MFA up again at the next login from outside the safe networks. A user without
-MFA is left as is.
+manager) or anyone (as an admin). A user without MFA is left as is. Whether
+the user must set it up again is their sign-in requirement's to say.
+
+Sign-in requirements and passkeys have their own commands; see "Passkeys and
+sign-in requirements".
 
 Issue a fixed API token for scripted access:
 
@@ -465,6 +474,56 @@ bin/eppitnic config poll-process-set frequency_minutes <N>  # default 5
 > **Warning:** with `poll process` off, the shared registry password no
 > longer rotates on a `passwdReminder`, and nothing else watches for that
 > reminder. Once the password expires, every EPP call fails.
+
+### `passkey metadata` — on by default
+
+Downloads the [FIDO Metadata Service](https://fidoalliance.org/metadata/) BLOB
+once a day. It is verified before a word of it is used: an RS256 signature, a
+certificate chain to the GlobalSign root the FIDO service is signed under
+(`config/certs/globalsign-root-r3.pem`), a serial no lower than the stored
+one, and a `nextUpdate` not more than 7 days past. The entries (AAGUID,
+description, status, attestation roots) go to `authenticator_metadata`. The
+BLOB itself is not kept: its use is under the
+[FIDO metadata terms](https://fidoalliance.org/metadata/metadata-legal-terms/).
+
+Only `device_bound` passkeys need it. With no metadata, or once it is more than
+7 days past its `nextUpdate`, no `device_bound` passkey can be registered (the
+reason `metadata`); keys already registered keep signing in, and a model the
+metadata has written off (`REVOKED`, `USER_VERIFICATION_BYPASS`,
+`ATTESTATION_KEY_COMPROMISE`, `USER_KEY_REMOTE_COMPROMISE`,
+`USER_KEY_PHYSICAL_COMPROMISE`) stops its keys from counting, from the stored
+table alone. `GET /v1/settings/passkeys` shows the state: `ok`, `stale` or
+`missing`.
+
+```bash
+bin/eppitnic passkey metadata                       # now, due or not
+bin/eppitnic passkey metadata --file=blob.jwt       # an offline server
+bin/eppitnic config passkey-metadata-set enabled false
+bin/eppitnic config passkey-metadata-set frequency_minutes <N>  # default 1440
+```
+
+While passkeys are off (no relying party set), `cron run` skips the job: it
+logs `passkey_metadata: passkeys are off`, exits `0` and counts the job as run.
+`passkey metadata` by hand always runs. Once a relying party is set, the job
+needs outbound HTTPS (port 443) to `mds3.fidoalliance.org`, which redirects to
+`mds.fidoalliance.org`: firewall and proxy rules must allow both hosts. The
+fetch is the only outbound request passkeys make. A failed run exits `80` (not
+fetched) or `81` (BLOB refused), makes `cron run` exit `70`, and is tried again
+after `frequency_minutes`. A server that cannot reach FIDO either runs
+`passkey metadata --file=` by hand or switches the job off. Revocation lists of
+the signing chain are not consulted.
+
+### `passkey purge` — on by default
+
+Deletes the WebAuthn challenges that have expired (a challenge lives five
+minutes) once a day, to keep `webauthn_challenges` small. An expired challenge
+is refused whether or not it is purged.
+
+```bash
+bin/eppitnic passkey purge
+bin/eppitnic config passkey-purge-set enabled false
+bin/eppitnic config passkey-purge-set frequency_minutes <N>  # default 1440
+```
 
 ### `domain sync` — on by default
 
@@ -645,8 +704,10 @@ registry query failed, and `0` otherwise.
 ## Skip MFA from safe networks
 
 Logins from a `safe_networks` range need only the password, not the MFA
-code. The default, `["127.0.0.1/32"]`, exempts logins from the machine
-itself. The token of such a login is not MFA-verified: routes behind the MFA
+code, and need not set up the authenticator app. A passkey is never
+relaxed: a user whose requirement asks for one needs it everywhere (see
+"Passkeys and sign-in requirements"). The default, `["127.0.0.1/32"]`,
+exempts logins from the machine itself. The token of such a login is not MFA-verified: routes behind the MFA
 gate (admin, manager) accept it only on requests from a safe network.
 
 ```bash
@@ -664,6 +725,123 @@ An empty list means every account with MFA is always asked for its code.
 Behind a reverse proxy this depends on `trusted_proxies` (below): the address
 compared is the resolved client address, so a range here that covers the
 proxy would exempt every request passing through it.
+
+## Passkeys and sign-in requirements
+
+Passkeys stay off until you set the relying party. Each user's sign-in
+requirement then decides what they must set up and how they may sign in.
+A server needs PHP 8.2 and, for `device_bound` keys only, outbound HTTPS to
+`mds3.fidoalliance.org` and `mds.fidoalliance.org`.
+
+### Switch passkeys on
+
+1. Set the relying party and the origins the browser may use:
+
+   ```bash
+   bin/eppitnic config passkeys --rp-id=<HOST_NAME> --origin=https://<HOST_NAME>
+   ```
+
+   `<HOST_NAME>` is the host name users type in the browser to reach the
+   frontend, never an IP address (`localhost` works for development). Each
+   origin is an `https` origin at or below it. Settings does the same.
+2. Check the result:
+
+   ```bash
+   bin/eppitnic config passkeys
+   ```
+
+   ```text
+   rp_id:         <HOST_NAME>
+   origins:       https://<HOST_NAME>
+   type:          any
+   models:        -
+   extra_aaguids: -
+   registered:    0 passkey(s); 0 user(s) need one
+   metadata:      missing
+   ```
+
+3. Optional: accept only device-bound keys, such as security keys. Fetch the
+   FIDO metadata first, because registration is checked against it:
+
+   ```bash
+   bin/eppitnic passkey metadata
+   bin/eppitnic config passkeys --type=device_bound --model=yubikey5 --model=windows_hello
+   ```
+
+   `--model` and `--extra-aaguid` are repeated for several values; an empty
+   value clears the list, and with none given any attested device-bound model
+   is accepted. The model keys are `yubikey5`, `yubikey_bio`,
+   `yubico_security_key`, `google_titan`, `feitian`, `token2`, `swissbit`,
+   `nitrokey`, `solokeys`, `thales` and `windows_hello`.
+
+> **Warning:** changing or clearing `--rp-id` once keys exist deletes every
+> registered passkey, because a key belongs to the host name it was made for.
+> The command refuses without `--confirm`. Tightening the type or models makes
+> the keys that no longer qualify stop counting at the next sign-in; the
+> command prints how many users that locks out, and Settings previews it
+> first.
+
+### Choose how each user signs in
+
+A user's `signin_requirement` is one of:
+
+| Value | Must set up | Signs in with |
+|---|---|---|
+| `passkey` | one passkey | a passkey only, once they have one |
+| `totp` (default) | the authenticator app | password and code; a passkey |
+| `totp_or_passkey` | the app and one passkey | password and code, or a passkey |
+| `none` | nothing | the password, but only a passkey once they have one and no authenticator app. Admins only |
+
+Choose `totp_or_passkey` for users who want a fallback. A passkey is voluntary
+under every value, and `safe_networks` never skip it. The first admin starts
+on `totp`. Only an admin sets `none`, and nobody loosens their own
+requirement from the command line.
+
+```bash
+bin/eppitnic user create jdoe --password='<PASSWORD>' --email=jdoe@example.it --signin-requirement=totp_or_passkey
+bin/eppitnic user signin-requirement jdoe passkey
+```
+
+### Recover a user who cannot sign in
+
+`user signin-reset` is the way back when a key and the app are lost, or every
+admin is locked out. It removes the user's passkeys and TOTP secret, sets a
+temporary password (`--password=`, `--password-stdin`, `--generate`, or asked
+for twice) that the user must change, and lets the password alone register a
+passkey again. It runs without anyone being able to sign in.
+
+```bash
+bin/eppitnic user signin-reset jdoe --generate
+bin/eppitnic user signin-reset jdoe --generate --requirement=totp
+```
+
+`--requirement=` sets a new requirement at the same time. The expected result
+is the user's temporary password, shown once.
+
+### Passkey commands
+
+| Command | What it does |
+|---|---|
+| `config passkeys` | shows the relying party and policy; `--rp-id`, `--origin`, `--type`, `--model`, `--extra-aaguid` set them, `--confirm` accepts deleting keys a changed `--rp-id` outdates |
+| `config passkey-purge-set <field> [value]` | sets or resets `enabled` or `frequency_minutes` of the `passkey purge` job |
+| `config passkey-metadata-set <field> [value]` | the same for the `passkey metadata` job |
+| `passkey metadata [--file=<BLOB_FILE>]` | fetches and verifies the FIDO metadata, or imports a copy downloaded elsewhere; exit `80`: not fetched, `81`: refused |
+| `passkey purge` | deletes expired WebAuthn challenges |
+| `user signin-requirement <user> <value>` | sets a user's requirement under the rules of `PUT /v1/users/{id}` |
+| `user passkeys <user>` | lists a user's passkeys, their requirement and whether the enrolment is open (`--json` too) |
+| `user passkey-revoke <user> [<passkey id>] [--all]` | removes one passkey or all of them |
+| `user signin-reset <user>` | takes a user's sign-in back to the start |
+| `user create --signin-requirement=<value>` | creates a user with a requirement (default `totp`) |
+
+`user signin-requirement` acts as `--user` (default 1): a manager reaches only
+non-admin users of their reseller. `user passkeys`, `user passkey-revoke` and
+`user signin-reset` are sysop tools: they reach any user, ignore `--user`,
+record to `history` without a user, and work with no one able to sign in.
+`passkey-revoke` may remove a user's last key; the password alone may then
+register a new one. Unlike `PUT /v1/settings/passkeys`, `config passkeys` does
+not refuse a change that leaves no admin able to sign in, so that it can undo
+one. It says how many users the change locks out, and records
+`passkey_policy_changed` like the API.
 
 ## Login rate limiting
 

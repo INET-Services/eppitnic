@@ -10,6 +10,9 @@ use Firebase\JWT\SignatureInvalidException;
 use Eppitnic\Config;
 use Eppitnic\Persistence\Scope;
 use Eppitnic\Service\EppSettings;
+use Eppitnic\Service\PasskeyPolicy;
+use Eppitnic\Service\PasskeySettings;
+use Eppitnic\Service\SigninRequirement;
 use OTPHP\TOTP;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use RedBeanPHP\R;
@@ -93,6 +96,7 @@ final class Auth
                 'id'            => (int) $user['id'],
                 'username'      => $user['username'],
                 'has_totp'      => false,
+                'has_passkeys'  => false,
                 'needs_totp'    => false,
                 'totp_verified' => false,
             ],
@@ -180,6 +184,7 @@ final class Auth
                 'id'            => (int) $user['id'],
                 'username'      => $user['username'],
                 'has_totp'      => false,
+                'has_passkeys'  => false,
                 'needs_totp'    => false,
                 'totp_verified' => false,
                 'debug'         => (bool) $user['debug'],
@@ -221,9 +226,9 @@ final class Auth
      */
     private static function withAccount(object $decoded, Request $request): object {
         $account = R::getRow('
-            SELECT u.active, u.role, u.reseller_id, r.name AS reseller_name, r.active AS reseller_active,
-                   u.must_change_password, u.must_enroll_mfa, u.totp_secret IS NOT NULL AS has_totp,
-                   u.max_idle_time, u.last_activity
+            SELECT u.id, u.active, u.role, u.reseller_id, r.name AS reseller_name, r.active AS reseller_active,
+                   u.must_change_password, u.signin_requirement, u.passkey_enroll_open,
+                   u.totp_secret IS NOT NULL AS has_totp, u.max_idle_time, u.last_activity
             FROM users u JOIN resellers r ON r.id = u.reseller_id
             WHERE u.id = ?
         ', [(int) $decoded->data->id]);
@@ -241,23 +246,77 @@ final class Auth
         // Sessions only: a signed token carries `exp`, while remote-auth and
         // fixed-token claims are synthesized and never went through a login
         if (isset($decoded->exp)) {
-            // not the token's word: TOTP enrolled after login counts too
+            self::requireValidPasskey($decoded, $request);
+            // not the token's word: a factor added after login counts too
             $decoded->data->has_totp = (bool) $account['has_totp'];
-            if ((int) $account['must_change_password'] === 1) {
-                throw new HttpForbiddenException($request, 'Password change required');
-            }
-            if ((int) $account['must_enroll_mfa'] === 1 && ! (int) $account['has_totp'] && ! self::onSafeNetwork()) {
-                throw new HttpForbiddenException($request, 'MFA enrollment required');
-            }
+            $decoded->data->has_passkeys = PasskeyPolicy::compliantCount((int) $account['id']) > 0;
+            self::requireSetupDone($decoded, $account, $request);
             self::touchActivity((int) $decoded->data->id, $account, $request);
         }
 
+        $decoded->data->needs_second_factor = self::needsSecondFactor($decoded->data);
         unset($decoded->data->admin);
         $decoded->data->role = $account['role'];
         $decoded->data->reseller_id = (int) $account['reseller_id'];
         $decoded->data->reseller_name = $account['reseller_name'];
         $decoded->data->registry = EppSettings::environment();
         return $decoded;
+    }
+
+    /**
+     * A session opened with a passkey ends when that key is gone or no longer
+     * meets the policy.
+     *
+     * @throws HttpUnauthorizedException
+     */
+    private static function requireValidPasskey(object $decoded, Request $request): void {
+        if (empty($decoded->data->cred)) {
+            return;
+        }
+        $key = R::getRow(
+            'SELECT user_id, aaguid, attestation_verified, backup_eligible FROM passkeys WHERE id = ?',
+            [(int) $decoded->data->cred]
+        );
+        if (empty($key)
+            || (int) $key['user_id'] !== (int) $decoded->data->id
+            || ! PasskeyPolicy::complies($key, PasskeySettings::get())) {
+            throw new HttpUnauthorizedException($request, 'Session ended: passkey no longer valid');
+        }
+    }
+
+    /**
+     * What a session still owes, as a login would be told: the password
+     * change, then the setup its sign-in requirement asks for, and for
+     * "passkey" in full effect a sign-in with the key itself.
+     *
+     * @throws HttpForbiddenException
+     */
+    private static function requireSetupDone(object $decoded, array $account, Request $request): void {
+        $mode = (string) $account['signin_requirement'];
+        $hasTotp = (bool) $account['has_totp'];
+        $amr = (string) ($decoded->data->amr ?? (empty($decoded->data->totp_verified) ? 'pwd' : 'pwd+otp'));
+        // the network matters only to an MFA enrolment that is due
+        $safe = SigninRequirement::needsTotp($mode) && ! $hasTotp && self::onSafeNetwork();
+        $requirement = SigninRequirement::evaluate(
+            $account, PasskeyPolicy::usableKeys($account), $hasTotp, $safe, $amr, PasskeySettings::enabled()
+        );
+
+        // as at login: the password alone registers keys only while that is open
+        $mayEnrol = (int) $account['passkey_enroll_open'] === 1 || $amr === 'pwd+otp';
+        $enrol = $requirement->required === SigninRequirement::PASSKEY_ENROLLMENT
+            && ($mayEnrol || ! PasskeySettings::enabled());
+        $message = match ($requirement->required) {
+            SigninRequirement::PASSWORD_CHANGE    => 'Password change required',
+            SigninRequirement::MFA_ENROLLMENT     => 'MFA enrollment required',
+            SigninRequirement::PASSKEY_ENROLLMENT => $enrol
+                ? 'Passkey enrollment required' : SigninRequirement::SIGNIN_RESET_MESSAGE,
+            // only a new sign-in meets methodAllowed; a session, full effect
+            default => $amr !== 'passkey' && $requirement->fullEffect ? 'Passkey sign-in required' : null,
+        };
+        if ($message !== null) {
+            throw new SessionRequirement($request, $message, $enrol
+                ? ['required' => 'passkey_enrollment'] + $requirement->keyCounter() : []);
+        }
     }
 
     /**
@@ -352,19 +411,38 @@ final class Auth
     }
 
     /**
-     * require MFA for a user who has it: a code checked at login
-     * (`totp_verified`), or a request from a safe network
+     * require a second factor of a user who has one: a passkey sign-in or a
+     * code checked at login (`strong_auth`), or a request from a safe network.
+     * A session with the password alone is refused once the account has TOTP
+     * or a compliant passkey. Fixed tokens and remote auth have no session.
      *
      * @param Request $request the incoming HTTP request
      * @return object decoded JWT claims
-     * @throws HttpForbiddenException if MFA is enabled but not yet verified
+     * @throws HttpForbiddenException if a second factor exists but the
+     *                       session did not use it
      */
     public static function requireMfa(Request $request): object {
         $decoded = self::verify($request);
-        if (!empty($decoded->data->has_totp) && empty($decoded->data->totp_verified) && !self::onSafeNetwork()) {
+        if ($decoded->data->needs_second_factor) {
             throw new HttpForbiddenException($request, 'MFA verification required');
         }
         return $decoded;
+    }
+
+    /**
+     * Whether requireMfa() refuses a session with these claims: it used the
+     * password alone, the account has a second factor (TOTP or a compliant
+     * passkey) and the client is outside `safe_networks`.
+     *
+     * @param array|object $claims strong_auth, totp_verified, has_totp and
+     *        has_passkeys, each missing one counting as false
+     */
+    public static function needsSecondFactor(array|object $claims): bool {
+        $claims = (array) $claims;
+        if ( ! empty($claims['strong_auth']) || ! empty($claims['totp_verified'])) {
+            return false;
+        }
+        return ( ! empty($claims['has_totp']) || ! empty($claims['has_passkeys'])) && ! self::onSafeNetwork();
     }
 
     /**

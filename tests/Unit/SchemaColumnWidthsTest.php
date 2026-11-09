@@ -33,6 +33,7 @@ final class SchemaColumnWidthsTest extends TestCase
             'contacts' => ['contacts', Validate::CONTACT_FIELD_MAX_LENGTHS],
             'domains'  => ['domains', Validate::DOMAIN_FIELD_MAX_LENGTHS],
             'users'    => ['users', Validate::USER_FIELD_MAX_LENGTHS],
+            'passkeys' => ['passkeys', Validate::PASSKEY_FIELD_MAX_LENGTHS],
         ];
     }
 

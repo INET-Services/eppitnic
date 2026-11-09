@@ -13,6 +13,9 @@ use Eppitnic\Cli\Command\ConfigEppServerCommand;
 use Eppitnic\Cli\Command\ConfigEppSetCommand;
 use Eppitnic\Cli\Command\ConfigKeepaliveCommand;
 use Eppitnic\Cli\Command\ConfigMigrateCommand;
+use Eppitnic\Cli\Command\ConfigPasskeyMetadataSetCommand;
+use Eppitnic\Cli\Command\ConfigPasskeyPurgeSetCommand;
+use Eppitnic\Cli\Command\ConfigPasskeysCommand;
 use Eppitnic\Cli\Command\ConfigPdnsApiCommand;
 use Eppitnic\Cli\Command\ConfigPdnsNameserverCommand;
 use Eppitnic\Cli\Command\ConfigPdnsSetCommand;
@@ -51,6 +54,8 @@ use Eppitnic\Cli\Command\DomainStatusCommand;
 use Eppitnic\Cli\Command\DomainSyncCommand;
 use Eppitnic\Cli\Command\DomainTransferCommand;
 use Eppitnic\Cli\Command\DomainUpdateCommand;
+use Eppitnic\Cli\Command\PasskeyMetadataCommand;
+use Eppitnic\Cli\Command\PasskeyPurgeCommand;
 use Eppitnic\Cli\Command\PdnsSyncCommand;
 use Eppitnic\Cli\Command\PollDrainCommand;
 use Eppitnic\Cli\Command\PollListCommand;
@@ -68,7 +73,11 @@ use Eppitnic\Cli\Command\UserActivateCommand;
 use Eppitnic\Cli\Command\UserCreateCommand;
 use Eppitnic\Cli\Command\UserDeactivateCommand;
 use Eppitnic\Cli\Command\UserMfaResetCommand;
+use Eppitnic\Cli\Command\UserPasskeyRevokeCommand;
+use Eppitnic\Cli\Command\UserPasskeysCommand;
 use Eppitnic\Cli\Command\UserPasswordCommand;
+use Eppitnic\Cli\Command\UserSigninRequirementCommand;
+use Eppitnic\Cli\Command\UserSigninResetCommand;
 use Eppitnic\Cli\Command\UserTokenCommand;
 
 /**
@@ -119,6 +128,8 @@ final class Application
             'doctor reparse-messages'   => DoctorReparseMessagesCommand::class,
             'doctor epp-password'       => DoctorEppPasswordCommand::class,
             'doctor normalize-payloads' => DoctorNormalizePayloadsCommand::class,
+            'passkey metadata'          => PasskeyMetadataCommand::class,
+            'passkey purge'             => PasskeyPurgeCommand::class,
             'pdns sync'                 => PdnsSyncCommand::class,
             'reseller list'             => ResellerListCommand::class,
             'reseller create'           => ResellerCreateCommand::class,
@@ -133,6 +144,10 @@ final class Application
             'user activate'             => UserActivateCommand::class,
             'user deactivate'           => UserDeactivateCommand::class,
             'user mfa-reset'            => UserMfaResetCommand::class,
+            'user signin-requirement'   => UserSigninRequirementCommand::class,
+            'user signin-reset'         => UserSigninResetCommand::class,
+            'user passkeys'             => UserPasskeysCommand::class,
+            'user passkey-revoke'       => UserPasskeyRevokeCommand::class,
             'config show'               => ConfigShowCommand::class,
             'config epp-server'         => ConfigEppServerCommand::class,
             'config epp-set'            => ConfigEppSetCommand::class,
@@ -142,6 +157,9 @@ final class Application
             'config domain-sync'        => ConfigDomainSyncCommand::class,
             'config domain-sync-set'    => ConfigDomainSyncSetCommand::class,
             'config domain-reap-set'    => ConfigDomainReapSetCommand::class,
+            'config passkeys'           => ConfigPasskeysCommand::class,
+            'config passkey-purge-set'  => ConfigPasskeyPurgeSetCommand::class,
+            'config passkey-metadata-set' => ConfigPasskeyMetadataSetCommand::class,
             'config pdns-set'           => ConfigPdnsSetCommand::class,
             'config pdns-api'           => ConfigPdnsApiCommand::class,
             'config pdns-nameserver'    => ConfigPdnsNameserverCommand::class,

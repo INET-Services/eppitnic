@@ -61,6 +61,9 @@ final class Middleware
                 $status = ($exception instanceof HttpException) ? $exception->getCode() : 500;
 
                 $body = ['error' => $exception->getMessage()];
+                if ($exception instanceof SessionRequirement) {
+                    $body += $exception->details;
+                }
                 if ($displayErrorDetails) {
                     $body['exception'] = get_class($exception);
                     $body['file'] = $exception->getFile();

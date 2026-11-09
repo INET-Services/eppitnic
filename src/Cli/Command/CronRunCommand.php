@@ -4,6 +4,7 @@ namespace Eppitnic\Cli\Command;
 
 use Eppitnic\Cli\Command;
 use Eppitnic\Service\CronjobSettings;
+use Eppitnic\Service\PasskeySettings;
 
 /**
  * The one verb a Docker image or any crontab needs to schedule -- decides
@@ -21,11 +22,16 @@ final class CronRunCommand extends Command
 {
     /** job => its command class, checked for enabled+frequency_minutes due-ness */
     private const SCHEDULED = [
-        'pdns'                  => PdnsSyncCommand::class,
-        'domain_sync'           => DomainSyncCommand::class,
-        'domain_reap_deletions' => DomainReapDeletionsCommand::class,
-        'poll_process'          => PollProcessCommand::class,
+        'pdns'                    => PdnsSyncCommand::class,
+        'domain_sync'             => DomainSyncCommand::class,
+        'domain_reap_deletions'   => DomainReapDeletionsCommand::class,
+        'poll_process'            => PollProcessCommand::class,
+        'passkey_challenge_purge' => PasskeyPurgeCommand::class,
+        'passkey_metadata'        => PasskeyMetadataCommand::class,
     ];
+
+    /** jobs with nothing to do while passkeys are off; by hand they still run */
+    private const NEEDS_PASSKEYS = ['passkey_metadata'];
 
     public function describe(): string {
         return 'run every scheduled job that is due -- the one verb to actually schedule';
@@ -47,12 +53,20 @@ final class CronRunCommand extends Command
             if ( ! $this->isDue(CronjobSettings::get($job))) {
                 continue;
             }
+            if (in_array($job, self::NEEDS_PASSKEYS, true) && ! PasskeySettings::enabled()) {
+                if ( ! $this->isDryRun()) {
+                    $this->record("{$job}: passkeys are off", ['job' => $job, 'skipped' => 'passkeys are off']);
+                    CronjobSettings::markRun($job);
+                }
+                continue;
+            }
             $ran[] = $job;
             if ($this->isDryRun()) {
                 continue;
             }
 
             $command = new $class([]);
+            $command->useErrorStream($this->errorStream());
             $code = $command->run();
             $command->flush();
             if ($code !== 0) {

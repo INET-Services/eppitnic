@@ -53,6 +53,14 @@ final class CronjobSettings
             'enabled'          => 'bool',
             'frequency_minutes' => 'range:1,1440',
         ]],
+        'passkey_challenge_purge' => ['passkey_challenge_purge', [
+            'enabled'          => 'bool',
+            'frequency_minutes' => 'range:1,1440',
+        ]],
+        'passkey_metadata' => ['passkey_metadata', [
+            'enabled'          => 'bool',
+            'frequency_minutes' => 'range:1,1440',
+        ]],
         'keepalive' => [null, [
             'enabled' => 'bool',
         ]],
@@ -84,6 +92,14 @@ final class CronjobSettings
         'poll_process' => [
             'enabled'           => true,
             'frequency_minutes' => 5,
+        ],
+        'passkey_challenge_purge' => [
+            'enabled'           => true,
+            'frequency_minutes' => 1440,
+        ],
+        'passkey_metadata' => [
+            'enabled'           => true,
+            'frequency_minutes' => 1440,
         ],
         'keepalive' => [
             'enabled'           => false,

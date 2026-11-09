@@ -177,14 +177,14 @@ final class UserWriteRulesTest extends TestCase
 
     public function testDeletingTotpClearsBothSecretsAndRecordsIt(): void {
         $app = $this->app();
-        R::exec("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', totp_secret_pending = 'PENDINGSECRET234', must_enroll_mfa = 0 WHERE id = 5");
+        R::exec("UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', totp_secret_pending = 'PENDINGSECRET234' WHERE id = 5");
 
         $response = $this->call($app, 'DELETE', '/v1/users/5/totp', [], 3);
 
         $this->assertSame(200, $response->getStatusCode());
         $this->assertSame('userA', self::json($response)['users'][0]['username']);
-        $row = R::getRow('SELECT totp_secret, totp_secret_pending, must_enroll_mfa FROM users WHERE id = 5');
-        $this->assertSame([null, null, 0], [$row['totp_secret'], $row['totp_secret_pending'], (int) $row['must_enroll_mfa']]);
+        $row = R::getRow('SELECT totp_secret, totp_secret_pending FROM users WHERE id = 5');
+        $this->assertSame([null, null], [$row['totp_secret'], $row['totp_secret_pending']]);
         $history = R::getRow("SELECT user_id, data FROM history WHERE object = 'users' AND object_id = 5");
         $this->assertSame(3, (int) $history['user_id']);
         $this->assertStringNotContainsString('JBSWY3DPEHPK3PXP', $history['data']);

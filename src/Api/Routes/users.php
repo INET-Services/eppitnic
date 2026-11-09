@@ -1,15 +1,25 @@
 <?php
 
 use Eppitnic\Api\Auth;
+use Eppitnic\Api\ClientIp;
 use Eppitnic\Api\Json;
 use Eppitnic\Api\LoginRateLimit;
 use Eppitnic\Config;
 use Eppitnic\Persistence\History;
+use Eppitnic\Persistence\PasskeyExists;
+use Eppitnic\Persistence\Passkeys;
 use Eppitnic\Persistence\User;
 use Eppitnic\Persistence\UsernameTaken;
 use Eppitnic\Persistence\UserRules;
 use Eppitnic\Service\EppSettings;
+use Eppitnic\Service\PasskeyPolicy;
+use Eppitnic\Service\PasskeySettings;
 use Eppitnic\Service\PasswordReset;
+use Eppitnic\Service\SigninRequirement;
+use Eppitnic\Service\StepUp;
+use Eppitnic\Service\WebAuthn;
+use Eppitnic\Service\WebAuthnChallenges;
+use Eppitnic\Service\WebAuthnFailure;
 use Eppitnic\Support\PasswordPolicy;
 use Eppitnic\Support\PasswordGenerator;
 use Eppitnic\Support\Validate;
@@ -38,36 +48,44 @@ $app->get('/v1/users/me', function (Request $request, Response $response, array 
     return Json::response($response, (array) $decoded->data);
 });
 
+$rateLimited = static function (Request $request, Response $response, string $username = ''): ?Response {
+    return LoginRateLimit::refusal($request, $response, $username);
+};
+
+/**
+ * An active user with what a login needs of them.
+ *
+ * @param string $where a condition on `u` (users) and `r` (resellers)
+ */
+$loginUser = static function (string $where, array $bind): ?array {
+    $rows = R::getAll("SELECT
+        u.id, u.role, u.reseller_id, r.name AS reseller_name, r.active AS reseller_active,
+        u.username, u.password, u.must_change_password, u.totp_secret, u.signin_requirement,
+        u.passkey_enroll_open, u.webauthn_handle, u.debug, u.max_token_age, u.token_lifetime, u.max_idle_time
+    FROM users u JOIN resellers r ON r.id = u.reseller_id
+    WHERE {$where} AND u.active = 1", $bind);
+
+    return $rows[0] ?? null;
+};
+
 /**
  * The checks every login-shaped route starts with: rate limit, username and
- * password, active reseller, and the MFA code of an enrolled user off the safe
- * networks. Records each failure as authenticate always has.
+ * password, active reseller, a passkey-only account turned away, and the MFA
+ * code of an enrolled user off the safe networks. Records each failure as
+ * authenticate always has.
  *
+ * @param bool $verifyCode false where the code was checked by an earlier call
+ *        of the same ceremony (finishing a passkey enrolment)
  * @return array{0: array|null, 1: Response|null} the user row, or the answer
  *         to give instead
  */
-$checkCredentials = static function (Request $request, Response $response): array {
+$checkCredentials = static function (Request $request, Response $response, bool $verifyCode = true) use ($rateLimited, $loginUser): array {
     $params   = $request->getParsedBody() ?? [];
     $username = $params['username'] ?? '';
     $password = $params['password'] ?? '';
 
-    // Before the credentials are looked at, not after: the point of the limit
-    // is that guessing costs something, and a check that runs after the guess
-    // has been evaluated has already done the work an attacker wanted.
-    if (LoginRateLimit::isExceeded()) {
-        $retryAfter = LoginRateLimit::retryAfter();
-
-        // recorded, but as its own event -- blocks must not feed the counter
-        // that produced them, or a blocked network would extend its own block
-        // by continuing to knock
-        History::recordSecurityEvent('login_blocked', $request, null, [
-            'username' => (string) $username,
-        ], 'secread');
-
-        return [null, Json::response($response, [
-            'error'       => 'Too many failed login attempts. Try again later.',
-            'retry_after' => $retryAfter,
-        ], 429)->withHeader('Retry-After', (string) $retryAfter)];
+    if (($blocked = $rateLimited($request, $response, (string) $username)) !== null) {
+        return [null, $blocked];
     }
 
     if (empty($username)) {
@@ -77,35 +95,29 @@ $checkCredentials = static function (Request $request, Response $response): arra
         return [null, Json::response($response, ['error' => 'Please provide a password'], 401)];
     }
 
-    $user = R::getAll("SELECT
-        u.id, u.role, u.reseller_id, r.name AS reseller_name, r.active AS reseller_active,
-        u.username, u.password, u.must_change_password, u.must_enroll_mfa, u.totp_secret, u.debug, u.max_token_age, u.token_lifetime, u.max_idle_time
-    FROM users u JOIN resellers r ON r.id = u.reseller_id
-    WHERE u.username = :username AND u.active = 1", [
-        ':username' => $username,
-    ]);
+    $user = $loginUser('u.username = :username', [':username' => $username]);
 
     // an unknown username is verified against a hash all the same, so the
     // response time does not tell which usernames exist. Same cost as
     // PASSWORD_DEFAULT; the password behind it is not a secret
     $dummyHash = '$2y$12$CZy6tosW6kbQLFDe.n8TK.HEku56zYUPZkN7rMqj2qrdEHpSp8hjy';
-    $passwordMatches = password_verify($password, empty($user) ? $dummyHash : (string) $user[0]['password']);
+    $passwordMatches = password_verify($password, $user === null ? $dummyHash : (string) $user['password']);
 
-    if (empty($user) || ! $passwordMatches) {
+    if ($user === null || ! $passwordMatches) {
         // The response says only "wrong username or password", so that it
         // cannot be used to find out which usernames exist. The log may be
         // precise -- it is read by an operator, not by whoever is guessing.
-        History::recordSecurityEvent('login_failed', $request, empty($user) ? null : (int) $user[0]['id'], [
+        History::recordSecurityEvent('login_failed', $request, $user === null ? null : (int) $user['id'], [
             'username' => (string) $username,
-            'reason'   => empty($user) ? 'no such active user' : 'wrong password',
+            'reason'   => $user === null ? 'no such active user' : 'wrong password',
         ], 'denied');
 
         return [null, Json::response($response, ['error' => 'Wrong username or password'], 401)];
     }
 
     // after the password, so this says nothing to someone merely guessing
-    if ((int) $user[0]['reseller_active'] !== 1) {
-        History::recordSecurityEvent('login_failed', $request, (int) $user[0]['id'], [
+    if ((int) $user['reseller_active'] !== 1) {
+        History::recordSecurityEvent('login_failed', $request, (int) $user['id'], [
             'username' => (string) $username,
             'reason'   => 'reseller deactivated',
         ], 'denied');
@@ -113,15 +125,35 @@ $checkCredentials = static function (Request $request, Response $response): arra
         return [null, Json::response($response, ['error' => 'Your reseller account is deactivated'], 403)];
     }
 
-    if (!empty($user[0]['totp_secret']) && !Auth::onSafeNetwork()) {
+    // A pending password change goes first and stays reachable: it is the one
+    // thing a passkey-only account still does with its password
+    if ($user['signin_requirement'] === SigninRequirement::PASSKEY && (int) $user['must_change_password'] !== 1) {
+        $requirement = SigninRequirement::evaluate(
+            $user, PasskeyPolicy::usableKeys($user), ! empty($user['totp_secret']), Auth::onSafeNetwork(),
+            'pwd', PasskeySettings::enabled()
+        );
+        if ( ! $requirement->methodAllowed) {
+            History::recordSecurityEvent('login_requirement_pending', $request, (int) $user['id'], [
+                'username' => (string) $user['username'],
+                'required' => 'passkey',
+            ], 'secread');
+
+            return [null, Json::response($response, [
+                'error'    => 'This account signs in with a passkey',
+                'required' => 'passkey',
+            ], 403)];
+        }
+    }
+
+    if ($verifyCode && !empty($user['totp_secret']) && !Auth::onSafeNetwork()) {
         $totpCode = $params['totp'] ?? '';
         if (empty($totpCode)) {
             return [null, Json::response($response, ['error' => 'MFA code required'], 401)];
         }
-        if (!Auth::totpVerify($user[0]['totp_secret'], $totpCode)) {
+        if (!Auth::totpVerify($user['totp_secret'], $totpCode)) {
             // counted like any other failure: the password alone is not a
             // login here, so guessing the second factor has to cost the same
-            History::recordSecurityEvent('login_failed', $request, (int) $user[0]['id'], [
+            History::recordSecurityEvent('login_failed', $request, (int) $user['id'], [
                 'username' => (string) $username,
                 'reason'   => 'wrong MFA code',
             ], 'denied');
@@ -130,48 +162,56 @@ $checkCredentials = static function (Request $request, Response $response): arra
         }
     }
 
-    return [$user[0], null];
+    return [$user, null];
 };
 
 /**
  * What a login answers with once the credentials are right: the pending
- * password change or MFA enrollment (403, no token), else the token.
- * `totp_verified` is set only when a code was checked: by checkCredentials()
- * off the safe networks, or by the caller ($codeChecked) on enrolment.
+ * password change or setup (403, no token), else the token. `amr` is how the
+ * session began -- pwd, pwd+otp ($codeChecked on enrolment) or passkey.
  */
-$continueLogin = static function (Request $request, Response $response, array $user, bool $codeChecked = false): Response {
-    $hasTotp   = !empty($user['totp_secret']);
-    $onSafeNet = Auth::onSafeNetwork();
-    $needsTotp = $hasTotp && !$onSafeNet;
+$continueLogin = static function (Request $request, Response $response, array $user, ?array $passkey = null, bool $codeChecked = false): Response {
+    $hasTotp    = !empty($user['totp_secret']);
+    $onSafeNet  = Auth::onSafeNetwork();
+    $viaPasskey = $passkey !== null;
+    $needsTotp  = $hasTotp && !$onSafeNet && !$viaPasskey;
+    $method     = $viaPasskey ? 'passkey' : ($needsTotp || $codeChecked ? 'pwd+otp' : 'pwd');
+
+    $available = PasskeySettings::enabled();
+    $keys = PasskeyPolicy::usableKeys($user);
+    $requirement = SigninRequirement::evaluate($user, $viaPasskey ? max(1, $keys) : $keys, $hasTotp, $onSafeNet, $method, $available);
 
     // The credentials were right, so this is not a failure: 'secread' keeps it
     // out of what LoginRateLimit counts
-    if ((int) $user['must_change_password'] === 1) {
+    $pending = static function (string $required, string $error, array $more = []) use ($request, $response, $user): Response {
         History::recordSecurityEvent('login_requirement_pending', $request, (int) $user['id'], [
             'username' => (string) $user['username'],
-            'required' => 'password_change',
+            'required' => $required,
         ], 'secread');
 
-        return Json::response($response, [
-            'error'           => 'Password change required',
-            'required'        => 'password_change',
-            'password_policy' => PasswordPolicy::describe(),
-        ], 403);
-    }
-    if ((int) $user['must_enroll_mfa'] === 1) {
-        if ($hasTotp) {
-            R::exec('UPDATE users SET must_enroll_mfa = 0 WHERE id = ?', [(int) $user['id']]);
-        } elseif (!$onSafeNet) {
-            History::recordSecurityEvent('login_requirement_pending', $request, (int) $user['id'], [
-                'username' => (string) $user['username'],
-                'required' => 'mfa_enrollment',
-            ], 'secread');
+        return Json::response($response, ['error' => $error, 'required' => $required] + $more, 403);
+    };
 
-            return Json::response($response, [
-                'error'    => 'MFA enrollment required',
-                'required' => 'mfa_enrollment',
-            ], 403);
+    if ($requirement->required === SigninRequirement::PASSWORD_CHANGE) {
+        return $pending('password_change', 'Password change required', ['password_policy' => PasswordPolicy::describe()]);
+    }
+    if ( ! $requirement->methodAllowed) {
+        return $pending('passkey', 'This account signs in with a passkey');
+    }
+    if ($requirement->required === SigninRequirement::MFA_ENROLLMENT) {
+        return $pending('mfa_enrollment', 'MFA enrollment required');
+    }
+    if ($requirement->required === SigninRequirement::PASSKEY_ENROLLMENT) {
+        // the password alone registers keys only while the account's enrolment
+        // is open; a code from a secret just made with that password proves
+        // nothing
+        $mayEnrol = (int) $user['passkey_enroll_open'] === 1 || ($needsTotp && ! $codeChecked);
+        if ($available && ! $mayEnrol) {
+            return $pending(SigninRequirement::SIGNIN_RESET, SigninRequirement::SIGNIN_RESET_MESSAGE);
         }
+        return $pending('passkey_enrollment', 'Passkey enrollment required', $requirement->keyCounter() + [
+            'passkeys_available' => $available,
+        ]);
     }
 
     Auth::startActivity((int) $user['id']);
@@ -181,24 +221,31 @@ $continueLogin = static function (Request $request, Response $response, array $u
     // than the password was.
     History::recordSecurityEvent('login_succeeded', $request, (int) $user['id'], [
         'username'  => (string) $user['username'],
-        'mfa'       => $needsTotp ? 'verified' : ($hasTotp ? 'skipped on a safe network' : 'not configured'),
-    ], 'login');
+        'method'    => $method,
+        'mfa'       => $viaPasskey ? 'passkey' : ($needsTotp ? 'verified' : ($hasTotp ? 'skipped on a safe network' : 'not configured')),
+    ] + ($viaPasskey ? ['credential' => (int) $passkey['id']] : []), 'login');
 
-    return Json::response($response, Auth::issueToken([
+    $claims = [
         'id'            => $user['id'],
         'role'          => $user['role'],
         'reseller_id'   => (int) $user['reseller_id'],
         'reseller_name' => $user['reseller_name'],
         'username'      => $user['username'],
         'has_totp'      => $hasTotp,
+        'has_passkeys'  => $viaPasskey || PasskeyPolicy::compliantCount((int) $user['id']) > 0,
         'needs_totp'    => $needsTotp,
         'totp_verified' => $needsTotp || $codeChecked,
+        'amr'           => $method,
+        'strong_auth'   => $method !== 'pwd',
         'debug'         => (bool) $user['debug'],
         'max_token_age'   => $user['max_token_age'],
         'token_lifetime'  => $user['token_lifetime'],
         'max_idle_time'   => $user['max_idle_time'],
         'registry'        => EppSettings::environment(),
-    ]));
+    ] + ($viaPasskey ? ['cred' => (int) $passkey['id']] : []);
+    $claims['needs_second_factor'] = Auth::needsSecondFactor($claims);
+
+    return Json::response($response, Auth::issueToken($claims));
 };
 
 $app->post('/v1/users/authenticate', function (Request $request, Response $response, array $args) use ($checkCredentials, $continueLogin): Response {
@@ -297,7 +344,7 @@ $app->post('/v1/users/password-reset/confirm', function (Request $request, Respo
  * password requirement comes first, and an enrolled user has nothing to do.
  */
 $mfaEnrollmentPending = static function (array $user): bool {
-    return (int) $user['must_enroll_mfa'] === 1
+    return SigninRequirement::needsTotp((string) $user['signin_requirement'])
         && (int) $user['must_change_password'] !== 1
         && empty($user['totp_secret']);
 };
@@ -345,15 +392,273 @@ $app->put('/v1/users/authenticate/mfa', function (Request $request, Response $re
         return Json::response($response, ['error' => 'Invalid MFA code'], 401);
     }
 
-    R::exec('UPDATE users SET totp_secret = totp_secret_pending, totp_secret_pending = NULL, must_enroll_mfa = 0 WHERE id = ?', [
+    R::exec('UPDATE users SET totp_secret = totp_secret_pending, totp_secret_pending = NULL WHERE id = ?', [
         (int) $user['id'],
     ]);
-    $user['totp_secret']     = $pending;
-    $user['must_enroll_mfa'] = 0;
+    $user['totp_secret'] = $pending;
 
-    History::record('users', (int) $user['id'], 'update', ['has_totp' => true, 'must_enroll_mfa' => 0], (int) $user['id']);
+    History::record('users', (int) $user['id'], 'update', ['has_totp' => true], (int) $user['id']);
 
-    return $continueLogin($request, $response, $user, true);
+    return $continueLogin($request, $response, $user, null, true);
+});
+
+$passkeysOff = static function (Response $response): Response {
+    return Json::response($response, ['error' => 'Passkeys are not enabled', 'passkeys_available' => false], 400);
+};
+
+$app->post('/v1/users/authenticate/passkey/options', function (Request $request, Response $response, array $args) use ($rateLimited, $passkeysOff): Response {
+    if (($blocked = $rateLimited($request, $response)) !== null) {
+        return $blocked;
+    }
+    if ( ! PasskeySettings::enabled()) {
+        return $passkeysOff($response);
+    }
+
+    [$challengeId, $challenge] = WebAuthnChallenges::issueLogin();
+    try {
+        $options = WebAuthn::requestOptions($challenge);
+    } catch (WebAuthnFailure) {
+        return $passkeysOff($response);
+    }
+    return Json::response($response, ['publicKey' => $options, 'challenge_id' => $challengeId]);
+});
+
+$app->post('/v1/users/authenticate/passkey', function (Request $request, Response $response, array $args) use ($rateLimited, $loginUser, $continueLogin): Response {
+    if (($blocked = $rateLimited($request, $response)) !== null) {
+        return $blocked;
+    }
+
+    // one answer for every way this can fail; the log has the reason
+    $fail = static function (string $reason, ?array $passkey = null) use ($request, $response): Response {
+        History::recordSecurityEvent('login_failed', $request, $passkey === null ? null : (int) $passkey['user_id'], [
+            'method'     => 'passkey',
+            'reason'     => $reason,
+            'credential' => $passkey === null ? null : (int) $passkey['id'],
+        ], 'denied');
+
+        return Json::response($response, ['error' => 'Passkey sign-in failed'], 401);
+    };
+
+    $params = $request->getParsedBody() ?? [];
+    $json = WebAuthn::credentialJson($params['credential'] ?? null);
+    $challengeId = $params['challenge_id'] ?? null;
+    if ($json === null || ! is_string($challengeId) || ! PasskeySettings::enabled()) {
+        return $fail($json === null || ! is_string($challengeId) ? 'malformed request' : 'passkeys are not enabled');
+    }
+
+    try {
+        $claims = WebAuthn::claims($json);
+    } catch (WebAuthnFailure $e) {
+        return $fail('malformed response');
+    }
+
+    // spent before anything else is looked at, found or not
+    if ( ! WebAuthnChallenges::consumeLogin($challengeId, $claims['challenge'])) {
+        return $fail('challenge unknown, spent or expired');
+    }
+
+    $passkey = Passkeys::findByCredentialId($claims['credential_id']);
+    $user = $passkey === null ? null : $loginUser('u.id = :id', [':id' => (int) $passkey['user_id']]);
+    $handle = $claims['user_handle'];
+    if ($user === null || $handle === null || ! hash_equals((string) $user['webauthn_handle'], $handle)) {
+        // verified against a key nobody has all the same, as the password
+        // route does for an unknown username
+        WebAuthn::spendVerificationTime();
+        return $fail(match (true) {
+            $passkey === null => 'unknown credential',
+            $user === null    => 'credential of an inactive user',
+            default           => 'user handle mismatch',
+        }, $passkey);
+    }
+
+    try {
+        $assertion = WebAuthn::verifyAssertion($json, $claims['challenge'], $passkey, $handle);
+    } catch (WebAuthnFailure $e) {
+        if ($e->reason === WebAuthnFailure::COUNTER_REGRESSION) {
+            History::recordSecurityEvent('passkey_counter_regression', $request, (int) $user['id'], [
+                'username'   => (string) $user['username'],
+                'credential' => (int) $passkey['id'],
+            ], 'secread');
+        }
+        return $fail($e->reason, $passkey);
+    }
+    if ( ! PasskeyPolicy::complies($passkey, PasskeySettings::get())) {
+        return $fail('key does not meet the passkey policy', $passkey);
+    }
+    if ( ! Passkeys::updateUsage((int) $passkey['id'], $assertion, ClientIp::get())) {
+        // a second sign-in with this key moved the counter on meanwhile
+        History::recordSecurityEvent('passkey_counter_regression', $request, (int) $user['id'], [
+            'username'   => (string) $user['username'],
+            'credential' => (int) $passkey['id'],
+        ], 'secread');
+        return $fail(WebAuthnFailure::COUNTER_REGRESSION, $passkey);
+    }
+
+    if ((int) $user['reseller_active'] !== 1) {
+        History::recordSecurityEvent('login_failed', $request, (int) $user['id'], [
+            'username' => (string) $user['username'],
+            'method'   => 'passkey',
+            'reason'   => 'reseller deactivated',
+        ], 'denied');
+
+        return Json::response($response, ['error' => 'Your reseller account is deactivated'], 403);
+    }
+
+    return $continueLogin($request, $response, $user, $passkey);
+});
+
+/**
+ * Whether $user still owes a passkey, and may be asked for one now: the
+ * password change comes first, and enough keys leave nothing to do.
+ */
+$passkeyEnrollmentPending = static function (array $user): bool {
+    $requirement = SigninRequirement::evaluate(
+        $user, PasskeyPolicy::usableKeys($user), ! empty($user['totp_secret']), Auth::onSafeNetwork(), 'pwd'
+    );
+    return $requirement->required === SigninRequirement::PASSKEY_ENROLLMENT;
+};
+
+/**
+ * Whether the account may register keys on its password: it has just been
+ * asked for its code, or its enrolment is open. Else 403, as the login says.
+ */
+$enrolmentRefusal = static function (Response $response, array $user, bool $codeChecked): ?Response {
+    if ($codeChecked || (int) $user['passkey_enroll_open'] === 1) {
+        return null;
+    }
+    return Json::response($response, [
+        'error'    => SigninRequirement::SIGNIN_RESET_MESSAGE,
+        'required' => SigninRequirement::SIGNIN_RESET,
+    ], 403);
+};
+
+$app->post('/v1/users/authenticate/passkey/enroll', function (Request $request, Response $response, array $args) use ($checkCredentials, $passkeyEnrollmentPending, $enrolmentRefusal, $passkeysOff): Response {
+    [$user, $failure] = $checkCredentials($request, $response);
+    if ($failure !== null) {
+        return $failure;
+    }
+    if ( ! PasskeySettings::enabled()) {
+        return $passkeysOff($response);
+    }
+    if ( ! $passkeyEnrollmentPending($user)) {
+        return Json::response($response, ['error' => 'No passkey enrollment is pending'], 400);
+    }
+    // checkCredentials asked for the code of everyone who has one off the safe networks
+    $codeChecked = ! empty($user['totp_secret']) && ! Auth::onSafeNetwork();
+    if (($refusal = $enrolmentRefusal($response, $user, $codeChecked)) !== null) {
+        return $refusal;
+    }
+
+    if (Passkeys::atLimit((int) $user['id'])) {
+        return Json::response($response, ['error' => Passkeys::LIMIT_MESSAGE, 'reason' => WebAuthnFailure::LIMIT], 400);
+    }
+
+    // what was verified here is what the finishing call may rely on
+    [$challengeId, $challenge] = WebAuthnChallenges::issue('register', (int) $user['id'], $codeChecked ? 'pwd+otp' : 'pwd');
+    $existing = array_column(Passkeys::listForUser((int) $user['id']), 'credential_id');
+
+    try {
+        $options = WebAuthn::registrationOptions($user, $existing, PasskeySettings::attestation(), $challenge);
+    } catch (WebAuthnFailure $e) {
+        return $e->reason === WebAuthnFailure::METADATA
+            ? Json::response($response, ['error' => WebAuthnFailure::METADATA_MESSAGE, 'reason' => $e->reason], 400)
+            : $passkeysOff($response);
+    }
+    return Json::response($response, ['publicKey' => $options, 'challenge_id' => $challengeId]);
+});
+
+$app->put('/v1/users/authenticate/passkey/enroll', function (Request $request, Response $response, array $args) use ($checkCredentials, $continueLogin, $passkeyEnrollmentPending, $enrolmentRefusal, $passkeysOff): Response {
+    $params = $request->getParsedBody() ?? [];
+    $challengeId = $params['challenge_id'] ?? null;
+
+    // the code was asked for when the options were issued
+    [$user, $failure] = $checkCredentials($request, $response, false);
+    if ($failure !== null) {
+        return $failure;
+    }
+    if ( ! PasskeySettings::enabled()) {
+        return $passkeysOff($response);
+    }
+    if ( ! $passkeyEnrollmentPending($user)) {
+        return Json::response($response, ['error' => 'No passkey enrollment is pending'], 400);
+    }
+
+    // the password was right, so a registration that does not verify is not
+    // a guess at anything: refused with its reason, logged, not counted
+    $refuse = static function (string $reason, ?string $error = null) use ($request, $response, $user): Response {
+        History::recordSecurityEvent('passkey_registration_failed', $request, (int) $user['id'], [
+            'username' => (string) $user['username'],
+            'reason'   => $reason,
+        ], 'secread');
+
+        $error ??= match ($reason) {
+            WebAuthnFailure::METADATA => WebAuthnFailure::METADATA_MESSAGE,
+            WebAuthnFailure::LIMIT    => Passkeys::LIMIT_MESSAGE,
+            default                   => 'Passkey registration failed',
+        };
+        return Json::response($response, ['error' => $error, 'reason' => $reason], 400);
+    };
+
+    $json = WebAuthn::credentialJson($params['credential'] ?? null);
+    if ($json === null || ! is_numeric($challengeId)) {
+        return $refuse('malformed');
+    }
+    if (Passkeys::atLimit((int) $user['id'])) {
+        return $refuse(WebAuthnFailure::LIMIT);
+    }
+
+    try {
+        $claims = WebAuthn::claims($json);
+        if ( ! WebAuthnChallenges::consume((int) $challengeId, $claims['challenge'], 'register', (int) $user['id'])) {
+            return $refuse(WebAuthnFailure::CHALLENGE);
+        }
+        $codeChecked = WebAuthnChallenges::contextOf((int) $challengeId) === 'pwd+otp';
+        if (($refusal = $enrolmentRefusal($response, $user, $codeChecked)) !== null) {
+            return $refusal;
+        }
+        $registration = WebAuthn::verifyRegistration($json, $claims['challenge'], $user, PasskeySettings::attestation());
+    } catch (WebAuthnFailure $e) {
+        return $refuse($e->reason);
+    }
+
+    $candidate = [
+        'aaguid'               => $registration->aaguid,
+        'attestation_verified' => (int) $registration->attestationVerified,
+        'backup_eligible'      => (int) $registration->backupEligible,
+    ];
+    if ( ! PasskeyPolicy::complies($candidate, PasskeySettings::get())) {
+        return $refuse('policy', 'This passkey does not meet the required type');
+    }
+
+    $name = trim((string) ($params['name'] ?? ''));
+    try {
+        $keyId = Passkeys::add(
+            (int) $user['id'],
+            $registration,
+            $name !== '' ? $name : 'Passkey ' . (Passkeys::countForUser((int) $user['id']) + 1)
+        );
+    } catch (PasskeyExists) {
+        return $refuse('credential_id', 'This passkey is already registered');
+    } catch (\InvalidArgumentException $e) {
+        return Json::response($response, ['error' => $e->getMessage()], 400);
+    }
+
+    History::record('users', (int) $user['id'], 'update', [
+        'passkey_registered' => ['id' => $keyId, 'aaguid' => $registration->aaguid],
+    ], (int) $user['id']);
+    History::recordSecurityEvent('passkey_registered', $request, (int) $user['id'], [
+        'username' => (string) $user['username'],
+        'credential' => $keyId,
+        'aaguid'     => $registration->aaguid,
+        'attested'   => $registration->attestationVerified,
+    ], 'secread');
+
+    UserRules::settleEnrollOpen((int) $user['id'], (int) $user['id']);
+    $user['passkey_enroll_open'] = (int) R::getCell('SELECT passkey_enroll_open FROM users WHERE id = ?', [(int) $user['id']]);
+
+    // the registration was a user-verified ceremony with the new key, so the
+    // login it completes counts as a passkey sign-in
+    return $continueLogin($request, $response, $user, Passkeys::find($keyId));
 });
 
 /**
@@ -386,7 +691,7 @@ $app->get('/v1/users', function (Request $request, Response $response, array $ar
 
     $users = R::getAll("SELECT " . User::readColumns($actor['isManager']) . " FROM users WHERE {$where}", $bind);
     return Json::response($response, [
-        'users' => $users,
+        'users' => User::withPasskeyCounts($users),
     ]);
 });
 
@@ -398,7 +703,7 @@ $app->get('/v1/users/{id}', function (Request $request, Response $response, arra
         ':id' => $args['id'],
     ] + $bind);
     return Json::response($response, [
-        'users' => $users,
+        'users' => User::withPasskeyCounts($users),
     ]);
 });
 
@@ -463,6 +768,10 @@ $userFieldError = static function (array $params): ?string {
             return 'username must be at most 32 characters';
         }
     }
+    $error = User::signinRequirementError($params['signin_requirement'] ?? SigninRequirement::TOTP);
+    if ($error !== null) {
+        return $error;
+    }
     if (Auth::parseTokenLifetime($params['max_token_age'] ?? null) === false) {
         return 'max_token_age (the maximum) must be null or one of ' . implode(', ', Auth::TOKEN_LIFETIMES) . ' (minutes)';
     }
@@ -475,7 +784,35 @@ $userFieldError = static function (array $params): ?string {
     return null;
 };
 
-$app->put('/v1/users/{id}', function (Request $request, Response $response, array $args) use ($notAuthorized, $userFieldError): Response {
+/**
+ * What an admin must prove to loosen their own sign-in requirement: a signed
+ * session (fixed tokens and remote auth have none) and a fresh step-up.
+ *
+ * @param array $user the admin's users row
+ * @return Response|null the 400, 401 or 429 to answer with, or null when the
+ *         proof holds
+ */
+$loosenStepUp = static function (Request $request, Response $response, array $user, mixed $proof) use ($rateLimited): ?Response {
+    if ( ! isset(Auth::verify($request)->exp)) {
+        return Json::response($response, ['error' => UserRules::SELF_LOOSENING_SESSION], 400);
+    }
+    if (empty($proof)) {
+        return Json::response($response, [
+            'error' => 'Confirm with a step-up to loosen your own sign-in requirement',
+            'stepup_required' => true,
+            'stepup' => StepUp::method($user),
+        ], 400);
+    }
+    if (($blocked = $rateLimited($request, $response, (string) $user['username'])) !== null) {
+        return $blocked;
+    }
+    if (StepUp::verify($request, $user, $proof) === null) {
+        return null;
+    }
+    return Json::response($response, ['error' => 'Step-up verification failed', 'stepup' => StepUp::method($user)], 401);
+};
+
+$app->put('/v1/users/{id}', function (Request $request, Response $response, array $args) use ($notAuthorized, $userFieldError, $loosenStepUp): Response {
     $actor = Auth::requireManager($request);
     $targetId = (int) $args['id'];
     $params = $request->getParsedBody() ?? [];
@@ -551,6 +888,14 @@ $app->put('/v1/users/{id}', function (Request $request, Response $response, arra
         }
     }
 
+    $mode = (string) ($params['signin_requirement'] ?? $current['signin_requirement']);
+    if (($refusal = UserRules::signinRequirementRefusal($actor['scope'], $current, $mode, true)) !== null) {
+        return Json::response($response, ['error' => $refusal[1]], $refusal[0]);
+    }
+    // only an admin gets this far: the refusal above stops everyone else
+    $loosensOwn = UserRules::loosensOwn($actor['scope'], $current, $mode);
+    $enrollOpen = UserRules::enrollOpenAfter($current, $mode);
+
     $fields = [
         'description'    => $params['description'] ?? $current['description'],
         'username'       => $username,
@@ -563,7 +908,9 @@ $app->put('/v1/users/{id}', function (Request $request, Response $response, arra
         'max_idle_time'  => $params['max_idle_time'] ?? $current['max_idle_time'],
         'debug'          => (int) ($params['debug'] ?? $current['debug']),
         'must_change_password' => (int) ($params['must_change_password'] ?? $current['must_change_password']),
-        'must_enroll_mfa'      => (int) ($params['must_enroll_mfa'] ?? $current['must_enroll_mfa']),
+        // must_enroll_mfa is still accepted and ignored: signin_requirement replaced it
+        'signin_requirement'  => $mode,
+        'passkey_enroll_open' => $enrollOpen,
     ];
     // the password column is only touched when a new one was actually supplied
     if ( ! empty($params['password'])) {
@@ -571,6 +918,11 @@ $app->put('/v1/users/{id}', function (Request $request, Response $response, arra
             return Json::response($response, ['error' => PasswordPolicy::explain($params['password'])], 400);
         }
         $fields['password'] = password_hash($params['password'], PASSWORD_DEFAULT);
+    }
+
+    // last, so a request refused for anything else leaves the proof unspent
+    if ($loosensOwn && ($stop = $loosenStepUp($request, $response, $current, $params['stepup'] ?? null)) !== null) {
+        return $stop;
     }
 
     $set = [];
@@ -584,9 +936,22 @@ $app->put('/v1/users/{id}', function (Request $request, Response $response, arra
     $users = R::getAll("SELECT " . User::readColumns(true) . " FROM users WHERE id = :id", [
         ':id' => $targetId,
     ]);
-    History::record('users', $targetId, 'update', $users[0] ?? [], $actor['id']);
+    History::record('users', $targetId, 'update', ($users[0] ?? []) + (
+        $enrollOpen !== (int) $current['passkey_enroll_open'] ? ['passkey_enroll_open' => $enrollOpen] : []
+    ), $actor['id']);
+    if ($loosensOwn) {
+        History::recordSecurityEvent('signin_requirement_loosened', $request, $actor['id'], [
+            'target_id' => $targetId, 'target' => $username,
+            'from' => $current['signin_requirement'], 'to' => $mode,
+        ]);
+    }
+    if ($mode === SigninRequirement::NONE && $current['signin_requirement'] !== $mode) {
+        History::recordSecurityEvent('signin_requirement_none', $request, $actor['id'], [
+            'target_id' => $targetId, 'target' => $username,
+        ]);
+    }
     return Json::response($response, [
-        'users' => $users,
+        'users' => User::withPasskeyCounts($users),
     ]);
 });
 
@@ -632,6 +997,13 @@ $app->post('/v1/users', function (Request $request, Response $response, array $a
         }
     }
 
+    $mode = (string) ($params['signin_requirement'] ?? SigninRequirement::TOTP);
+    // measured against the default a new user starts with
+    $stub = ['id' => 0, 'signin_requirement' => SigninRequirement::TOTP];
+    if (($refusal = UserRules::signinRequirementRefusal($actor['scope'], $stub, $mode)) !== null) {
+        return Json::response($response, ['error' => $refusal[1]], $refusal[0]);
+    }
+
     if ((int) R::getCell('SELECT COUNT(*) FROM resellers WHERE id = ?', [$resellerId]) === 0) {
         return Json::response($response, ['error' => "Reseller {$resellerId} not found"], 400);
     }
@@ -649,23 +1021,29 @@ $app->post('/v1/users', function (Request $request, Response $response, array $a
             resellerId: $resellerId,
             role: $role,
             mustChangePassword: (bool) (int) ($params['must_change_password'] ?? 0),
-            mustEnrollMfa: (bool) (int) ($params['must_enroll_mfa'] ?? 0),
             actorId: $actor['id'],
             active: (bool) (int) ($params['active'] ?? 1),
             maxTokenAge: Auth::parseTokenLifetime($params['max_token_age'] ?? null),
             maxIdleTime: $optionalInt($params['max_idle_time'] ?? null),
             debug: (bool) (int) ($params['debug'] ?? 0),
             notifyEnabled: isset($params['notify_enabled']) ? (bool) (int) $params['notify_enabled'] : null,
+            signinRequirement: $mode,
         );
     } catch (UsernameTaken | \InvalidArgumentException $e) {
         return Json::response($response, ['error' => $e->getMessage()], 400);
+    }
+
+    if ($mode === SigninRequirement::NONE) {
+        History::recordSecurityEvent('signin_requirement_none', $request, $actor['id'], [
+            'target_id' => $id, 'target' => $params['username'],
+        ]);
     }
 
     $users = R::getAll("SELECT " . User::readColumns(true) . " FROM users WHERE id = :id", [
         ':id' => $id,
     ]);
     return Json::response($response, [
-        'users' => $users,
+        'users' => User::withPasskeyCounts($users),
     ], 201);
 });
 
@@ -778,7 +1156,7 @@ $app->put('/v1/users/{id}/totp', function (Request $request, Response $response,
     ]);
 });
 
-$app->delete('/v1/users/{id}/totp', function (Request $request, Response $response, array $args): Response {
+$app->delete('/v1/users/{id}/totp', function (Request $request, Response $response, array $args) use ($rateLimited): Response {
     $decoded = Auth::requireMfa($request);
 
     // one's own, or as their manager or an admin (Auth::actorFor)
@@ -786,6 +1164,21 @@ $app->delete('/v1/users/{id}/totp', function (Request $request, Response $respon
         Auth::actorFor($request, (int) $args['id']);
     } catch (HttpForbiddenException) {
         return Json::response($response, ['error' => 'You are not authorized to perform this operation'], 403);
+    }
+
+    // a key-only account's authenticator app is its fallback: taking it away
+    // is confirmed with the key, not with the session alone. Fixed tokens and
+    // remote auth have no session to confirm
+    $user = R::getRow('SELECT id, username, password, totp_secret, signin_requirement FROM users WHERE id = ?', [(int) $args['id']]);
+    if (isset($decoded->exp) && (int) $decoded->data->id === (int) $args['id']
+        && ($user['signin_requirement'] ?? null) === SigninRequirement::PASSKEY) {
+        if (($blocked = $rateLimited($request, $response)) !== null) {
+            return $blocked;
+        }
+        $proof = ($request->getParsedBody() ?? [])['stepup'] ?? null;
+        if (StepUp::verify($request, $user, $proof) !== null) {
+            return Json::response($response, ['error' => 'Step-up verification failed', 'stepup' => StepUp::method($user)], 401);
+        }
     }
 
     $users = UserRules::resetMfa((int) $args['id'], (int) $decoded->data->id);

@@ -66,3 +66,8 @@ if ( ! defined('SETUP_FAILED'))       define('SETUP_FAILED', 61);       // crede
 
 // scheduler exit codes (70-79)
 if ( ! defined('CRON_RUN_FAILED')) define('CRON_RUN_FAILED', 70); // at least one due job's own run() returned non-zero
+
+// passkey metadata exit codes (80-89). Failing to get a BLOB and refusing one
+// are separate answers: the first is worth a retry, the second an operator.
+if ( ! defined('METADATA_FETCH_FAILED')) define('METADATA_FETCH_FAILED', 80); // FIDO could not be reached or sent no BLOB
+if ( ! defined('METADATA_REFUSED'))      define('METADATA_REFUSED', 81);      // the BLOB failed a check: signature, chain, age or serial

@@ -3,6 +3,9 @@
 namespace Eppitnic\Api;
 
 use Eppitnic\Config;
+use Eppitnic\Persistence\History;
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
 use RedBeanPHP\R;
 
 /**
@@ -43,6 +46,32 @@ final class LoginRateLimit
 
         $settings = self::settings();
         return ClientIp::network($ip, (int) $settings['ipv4_prefix'], (int) $settings['ipv6_prefix']);
+    }
+
+    /**
+     * Before the credentials are looked at, not after: the point of the limit
+     * is that guessing costs something, and a check that runs after the guess
+     * has been evaluated has already done the work an attacker wanted.
+     *
+     * @return Response|null the 429 to answer with, or null when under the limit
+     */
+    public static function refusal(Request $request, Response $response, string $username = ''): ?Response {
+        if ( ! self::isExceeded()) {
+            return null;
+        }
+        $retryAfter = self::retryAfter();
+
+        // recorded, but as its own event -- blocks must not feed the counter
+        // that produced them, or a blocked network would extend its own block
+        // by continuing to knock
+        History::recordSecurityEvent('login_blocked', $request, null, [
+            'username' => $username,
+        ], 'secread');
+
+        return Json::response($response, [
+            'error'       => 'Too many failed login attempts. Try again later.',
+            'retry_after' => $retryAfter,
+        ], 429)->withHeader('Retry-After', (string) $retryAfter);
     }
 
     /**

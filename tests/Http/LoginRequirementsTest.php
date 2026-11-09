@@ -13,8 +13,9 @@ use Slim\Factory\AppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 
 /**
- * A user flagged to change the password or enroll MFA gets no token until
- * they have, and the routes that complete it answer like a login.
+ * A user flagged to change the password, or whose sign-in requirement asks
+ * for MFA they lack, gets no token until they have, and the routes that
+ * complete it answer like a login.
  */
 final class LoginRequirementsTest extends TestCase
 {
@@ -64,6 +65,10 @@ final class LoginRequirementsTest extends TestCase
         R::exec("UPDATE users SET {$column} = 1 WHERE id = ?", [$id]);
     }
 
+    private function requirement(string $mode, int $id = 3): void {
+        R::exec('UPDATE users SET signin_requirement = ? WHERE id = ?', [$mode, $id]);
+    }
+
     private function call(\Slim\App $app, string $method, string $path, array $body = [], ?string $token = null): ResponseInterface {
         $request = (new ServerRequestFactory())->createServerRequest($method, "http://localhost{$path}")
             ->withParsedBody($body);
@@ -103,7 +108,7 @@ final class LoginRequirementsTest extends TestCase
 
     public function testMfaEnrollmentIsRequiredOffTheSafeNetworks(): void {
         $app = $this->app();
-        $this->flag('must_enroll_mfa');
+        $this->requirement('totp');
 
         $response = $this->call($app, 'POST', '/v1/users/authenticate', $this->creds());
         $body = self::json($response);
@@ -115,21 +120,21 @@ final class LoginRequirementsTest extends TestCase
         $this->assertSame(0, self::denied());
     }
 
-    public function testMfaEnrollmentIsSkippedOnASafeNetworkAndTheFlagStays(): void {
+    public function testMfaEnrollmentIsSkippedOnASafeNetworkAndTheRequirementStays(): void {
         $app = $this->app();
-        $this->flag('must_enroll_mfa');
+        $this->requirement('totp');
         $_SERVER['REMOTE_ADDR'] = self::SAFE;
 
         $response = $this->call($app, 'POST', '/v1/users/authenticate', $this->creds());
 
         $this->assertSame(200, $response->getStatusCode());
         $this->assertArrayHasKey('token', self::json($response));
-        $this->assertSame(1, (int) R::getCell('SELECT must_enroll_mfa FROM users WHERE id = 3'));
+        $this->assertSame('totp', R::getCell('SELECT signin_requirement FROM users WHERE id = 3'));
     }
 
-    public function testTheFlagIsClearedAtLoginWhenMfaIsAlreadySetUp(): void {
+    public function testAnEnrolledUserLogsInWithTheirCodeUnderTheRequirement(): void {
         $app = $this->app();
-        $this->flag('must_enroll_mfa');
+        $this->requirement('totp');
         $secret = TOTP::generate(null, 20)->getSecret();
         R::exec('UPDATE users SET totp_secret = ? WHERE id = 3', [$secret]);
 
@@ -138,7 +143,17 @@ final class LoginRequirementsTest extends TestCase
         ]));
 
         $this->assertSame(200, $response->getStatusCode());
-        $this->assertSame(0, (int) R::getCell('SELECT must_enroll_mfa FROM users WHERE id = 3'));
+        $this->assertArrayNotHasKey('required', self::json($response));
+        $this->assertSame('totp', R::getCell('SELECT signin_requirement FROM users WHERE id = 3'));
+    }
+
+    public function testTheLegacyFlagIsIgnored(): void {
+        $app = $this->app();
+        $this->flag('must_enroll_mfa');
+
+        $response = $this->call($app, 'POST', '/v1/users/authenticate', $this->creds());
+
+        $this->assertSame(200, $response->getStatusCode(), 'signin_requirement decides, not must_enroll_mfa');
     }
 
     public function testAWrongPasswordOnTheChangeRouteIsRefusedAndCounted(): void {
@@ -203,7 +218,7 @@ final class LoginRequirementsTest extends TestCase
     public function testTheChainRunsFromPasswordThroughMfaToAToken(): void {
         $app = $this->app();
         $this->flag('must_change_password');
-        $this->flag('must_enroll_mfa');
+        $this->requirement('totp');
 
         $step = $this->call($app, 'POST', '/v1/users/authenticate/password', $this->creds(['new_password' => self::FRESH]));
         $this->assertSame(403, $step->getStatusCode());
@@ -225,14 +240,15 @@ final class LoginRequirementsTest extends TestCase
         $this->assertNotEmpty($body['token']);
         $this->assertTrue($body['has_totp']);
         $this->assertTrue($body['totp_verified']);
-        $this->assertSame(0, (int) R::getCell('SELECT must_enroll_mfa FROM users WHERE id = 3'));
+        $this->assertSame('pwd+otp', $body['amr']);
+        $this->assertTrue($body['strong_auth']);
         $this->assertSame($secret, R::getCell('SELECT totp_secret FROM users WHERE id = 3'));
     }
 
     public function testMfaEnrollmentWaitsForAPendingPasswordChange(): void {
         $app = $this->app();
         $this->flag('must_change_password');
-        $this->flag('must_enroll_mfa');
+        $this->requirement('totp');
 
         $response = $this->call($app, 'POST', '/v1/users/authenticate/mfa', $this->creds());
 
@@ -257,7 +273,7 @@ final class LoginRequirementsTest extends TestCase
         $this->assertStringContainsString('Password change required', (string) $response->getBody());
 
         R::exec('UPDATE users SET must_change_password = 0 WHERE id = 3');
-        $this->flag('must_enroll_mfa');
+        $this->requirement('totp');
         $response = $this->call($app, 'GET', '/v1/users/me', [], $token);
         $this->assertSame(403, $response->getStatusCode());
         $this->assertStringContainsString('MFA enrollment required', (string) $response->getBody());
@@ -269,7 +285,7 @@ final class LoginRequirementsTest extends TestCase
     public function testRemoteAuthIsUnaffected(): void {
         $app = $this->app(['enabled' => true, 'header' => null]);
         $this->flag('must_change_password');
-        $this->flag('must_enroll_mfa');
+        $this->requirement('totp');
 
         $response = $app->handle(
             (new ServerRequestFactory())->createServerRequest('GET', 'http://localhost/v1/users/me', ['REMOTE_USER' => 'plain'])
@@ -291,23 +307,27 @@ final class LoginRequirementsTest extends TestCase
         $this->assertSame(200, $response->getStatusCode());
     }
 
-    public function testAManagerCanSetTheFlagsAtCreationAndOnUpdate(): void {
+    public function testAManagerCanSetThePasswordFlagAtCreationAndOnUpdateAndTheLegacyFlagIsIgnored(): void {
         $app = $this->app();
         $manager = TestAccounts::issueToken(['id' => 2, 'role' => 'manager', 'reseller_id' => 2, 'has_totp' => false, 'max_token_age' => 60])['token'];
 
         $created = $this->call($app, 'POST', '/v1/users', [
-            'username' => 'fresh-user', 'email' => 'fresh@example.test', 'password' => self::FRESH, 'must_change_password' => 1,
+            'username' => 'fresh-user', 'email' => 'fresh@example.test', 'password' => self::FRESH,
+            'must_change_password' => 1, 'must_enroll_mfa' => 1,
         ], $manager);
         $row = self::json($created)['users'][0];
         $this->assertSame(201, $created->getStatusCode());
         $this->assertSame(1, (int) $row['must_change_password']);
-        $this->assertSame(0, (int) $row['must_enroll_mfa']);
+        $this->assertArrayNotHasKey('must_enroll_mfa', $row);
+        $this->assertSame('totp', $row['signin_requirement'], 'a new user starts with the default');
+        $this->assertSame(0, (int) R::getCell("SELECT must_enroll_mfa FROM users WHERE username = 'fresh-user'"));
 
-        $updated = $this->call($app, 'PUT', '/v1/users/3', ['must_enroll_mfa' => 1], $manager);
+        $updated = $this->call($app, 'PUT', '/v1/users/3', ['must_enroll_mfa' => 1, 'must_change_password' => 1], $manager);
         $row = self::json($updated)['users'][0];
         $this->assertSame(200, $updated->getStatusCode());
-        $this->assertSame(1, (int) $row['must_enroll_mfa']);
-        $this->assertSame(0, (int) $row['must_change_password']);
+        $this->assertSame(1, (int) $row['must_change_password']);
+        $this->assertSame('none', $row['signin_requirement']);
+        $this->assertSame(0, (int) R::getCell('SELECT must_enroll_mfa FROM users WHERE id = 3'));
     }
 
     public function testAManagerCannotFlagAnAdminAndAPlainUserCannotFlagAnyone(): void {

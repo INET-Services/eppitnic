@@ -25,6 +25,8 @@ final class CronjobsRouteTest extends TestCase
             'domain_sync'           => ['enabled' => false, 'batch_size' => 25, 'cursor_id' => 0, 'frequency_minutes' => 5, 'last_run_at' => null],
             'domain_reap_deletions' => ['enabled' => true, 'frequency_minutes' => 15, 'last_run_at' => null],
             'poll_process'          => ['enabled' => true, 'frequency_minutes' => 5, 'last_run_at' => null],
+            'passkey_challenge_purge' => ['enabled' => true, 'frequency_minutes' => 1440, 'last_run_at' => null],
+            'passkey_metadata'      => ['enabled' => true, 'frequency_minutes' => 1440, 'last_run_at' => null],
             'keepalive'             => false,
         ]);
 
@@ -79,7 +81,7 @@ final class CronjobsRouteTest extends TestCase
         $body = self::body($this->get($app));
 
         $this->assertSame(
-            ['pdns', 'domain_sync', 'domain_reap_deletions', 'poll_process', 'keepalive'],
+            ['pdns', 'domain_sync', 'domain_reap_deletions', 'poll_process', 'passkey_challenge_purge', 'passkey_metadata', 'keepalive'],
             array_keys($body['jobs'])
         );
         $this->assertSame(3600, $body['jobs']['pdns']['ttl']);

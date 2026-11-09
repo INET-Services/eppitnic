@@ -138,6 +138,8 @@ so the response time does not reveal which usernames exist). If the account has 
 doesn't come from a `safe_networks` CIDR (the `settings` table, key
 `safe_networks`), a valid `totp` code is required in the same request. There
 is no separate two-step exchange: retry the whole call once you have the code.
+What a password login may do depends on the user's sign-in requirement (see
+"Sign-in requirements"); a passkey signs in through its own routes.
 
 Success response — every claim plus a `token`:
 
@@ -150,8 +152,12 @@ Success response — every claim plus a `token`:
   "reseller_name": "Example Reseller",
   "username": "reseller1",
   "has_totp": true,
+  "has_passkeys": false,
   "needs_totp": true,
   "totp_verified": true,
+  "amr": "pwd+otp",
+  "strong_auth": true,
+  "needs_second_factor": false,
   "debug": false,
   "max_token_age": null,
   "max_idle_time": null,
@@ -167,6 +173,19 @@ Success response — every claim plus a `token`:
   `totp_verified` is true only when a TOTP code was checked for this token
   (never after a safe-network login). The server reads `has_totp` from the
   account on every request, not from the token.
+- `has_passkeys` — whether the account has a passkey that meets the passkey
+  policy; read from the account on every request too.
+- `needs_second_factor` — whether the MFA gate refuses *this* session now: it
+  used the password alone, the account has TOTP or a compliant passkey and
+  the client is outside `safe_networks`. A client can hide what would answer
+  `403` `MFA verification required` instead of loading it. Computed on every
+  request from the current claims and network; `renew-token` carries the
+  values of that moment.
+- `amr` — how the session began: `pwd`, `pwd+otp` or `passkey`;
+  `strong_auth` is true for the last two, and the MFA gate accepts them
+  everywhere. `cred` (passkey sign-ins only) is the key's id: the session ends
+  with `401` `Session ended: passkey no longer valid` once that key is removed
+  or stops meeting the passkey policy. `renew-token` keeps all three.
 - `max_token_age` — the longest token lifetime in minutes an admin or
   manager allows this user: one of `5`, `10`, `15`, `30`, `60`, `90`, `120`,
   `240`; `null` (and `0`, or a negative number) means `240`. Users cannot
@@ -193,7 +212,7 @@ Failures:
 | `401` | `MFA code required` / `Invalid MFA code` |
 | `403` | `Your reseller account is deactivated` — correct password, deactivated reseller |
 | `403` | `Password change required` — see "Forced password change and MFA enrollment"; no token is issued |
-| `403` | `MFA enrollment required` — same |
+| `403` | `MFA enrollment required`, `Passkey enrollment required`, `Ask an administrator to reset your sign-in`, `This account signs in with a passkey` — same, see "Sign-in requirements" |
 | `429` | too many failures from this network (below) |
 
 `GET /v1/users/renew-token` (any valid token) re-issues a fresh JWT from the
@@ -204,24 +223,93 @@ TOTP.
 `GET /v1/users/me` (any valid token) returns the claims as-is, without
 `token`.
 
+### Sign-in requirements
+
+Every user has a `signin_requirement`, set with `POST`/`PUT /v1/users` or
+`user signin-requirement`. It says what the user must set up and which
+sign-ins are refused. Passkeys themselves are voluntary: with any requirement
+a user may register keys (at most 10) and sign in with one.
+
+| Value | Must set up | Signs in with | Refused |
+|---|---|---|---|
+| `passkey` | one passkey | a passkey | the password, with or without a code, once a key exists, also on `safe_networks`; until then it only leads to the setup |
+| `totp` (default) | the authenticator app | password and code; a passkey | the password alone, outside `safe_networks` |
+| `totp_or_passkey` | the app **and** one passkey | password and code, or a passkey | the password alone, outside `safe_networks` |
+| `none` | nothing | the password; a passkey | the password alone once the user has a compliant key and no authenticator app, also on `safe_networks`. Only an admin sets it |
+
+A user may always set up more than the requirement asks for, and then the weaker
+way in stops working: a user with a compliant key and no authenticator app can
+no longer sign in with the password alone (`403` `required: passkey`), whatever
+the requirement; open sessions are not ended, the next sign-in needs the key.
+
+A user who wants a fallback to a lost key takes `totp_or_passkey`. A new user
+gets `totp`, and so does the first admin `eppitnic setup` creates.
+
+`safe_networks` skip only the TOTP code and the app's enrolment, never a
+passkey. A user who already has the app gives its code outside
+`safe_networks` whatever the requirement. A key counts only while it meets the
+passkey policy (`GET /v1/settings/passkeys`); with passkeys switched off no key
+counts, and a requirement that asks for one cannot be set.
+
+`POST`/`PUT /v1/users` refuse a value outside the four with `400`
+`signin_requirement must be one of: passkey, totp, totp_or_passkey, none`, and
+`passkey` or `totp_or_passkey` while passkeys are off with `400` `passkeys are
+not enabled: set the relying party first (settings passkeys)`.
+
+### Sign in with a passkey
+
+`POST /v1/users/authenticate/passkey/options` — no body, no auth, rate-limited
+like a login (`429`). Returns `{"publicKey": {...}, "challenge_id": "..."}`:
+WebAuthn request options for a usernameless sign-in (any resident key, user
+verification required, a 5-minute timeout) and a signed challenge id, valid 5
+minutes, usable once. `400` `{"error": "Passkeys are not enabled",
+"passkeys_available": false}` while the relying party is empty: a login screen
+can use that answer to decide whether to offer a passkey.
+
+`POST /v1/users/authenticate/passkey` — body `{"challenge_id", "credential"}`,
+`credential` being the browser's assertion as JSON (`PublicKeyCredential`'s
+`toJSON()`, an object or a string). No username is sent: the key names its
+user. Answers:
+
+| Status | Body |
+|---|---|
+| `200` | the token body of a login, with `amr` `passkey`, `strong_auth` true and `cred` the key's id; `totp_verified` is false |
+| `401` | `{"error": "Passkey sign-in failed"}`, the one answer for every failure: a malformed request, an unknown, spent or expired challenge, an unknown key, a wrong user handle, a bad signature, a counter that did not advance (a constant 0 is accepted), a key that no longer meets the passkey policy, passkeys off. The reason goes to the log only; the failure is counted for the rate limit |
+| `403` | `Your reseller account is deactivated`, or what the login still owes after a right key: `password_change` or `mfa_enrollment`, as in the next section |
+| `429` | too many failures from this network |
+
+A passkey sign-in is accepted for an active user of every requirement, and a
+key must be among those that meet the passkey policy. The sign-in records the
+key's use (`last_used`, signature counter) and `login_succeeded` with `method`
+`passkey` and the key's id.
+
 ### Forced password change and MFA enrollment
 
-Two user flags, `must_change_password` and `must_enroll_mfa`, are set through
-`POST`/`PUT /v1/users` (0/1, by a manager or admin, with the usual scope
-rules) or `bin/eppitnic user create --must-change-password --must-enroll-mfa`.
-While one is pending, `POST /v1/users/authenticate` issues no token, after
-every other check has passed:
+The user flag `must_change_password` is set through `POST`/`PUT /v1/users`
+(0/1, by a manager or admin, with the usual scope rules) or
+`bin/eppitnic user create --must-change-password`. What else a user must set up
+comes from their `signin_requirement`. `must_enroll_mfa` is still accepted and
+ignored. While anything is pending, `POST /v1/users/authenticate` issues no
+token, after every other check has passed:
 
 | Pending | Answer |
 |---|---|
 | `must_change_password` | `403` `{"error": "Password change required", "required": "password_change", "password_policy": {...}}` |
-| `must_enroll_mfa`, no MFA yet, client outside `safe_networks` | `403` `{"error": "MFA enrollment required", "required": "mfa_enrollment"}` |
+| `totp` or `totp_or_passkey`, no authenticator app yet, client outside `safe_networks` | `403` `{"error": "MFA enrollment required", "required": "mfa_enrollment"}` |
+| `passkey` or `totp_or_passkey`, no compliant passkey yet (also on `safe_networks`) | `403` `{"error": "Passkey enrollment required", "required": "passkey_enrollment", "passkeys_needed": 1, "passkeys_minimum": 1, "passkeys_have": 0, "passkeys_available": bool}` if the code was just checked or the account's `passkey_enroll_open` is set; `passkeys_available` is false while passkeys are switched off |
+| the same, by the password alone (a safe network, or no TOTP) with the enrolment closed | `403` `{"error": "Ask an administrator to reset your sign-in", "required": "signin_reset"}` |
+| `passkey`, or `none` without an authenticator app, with a compliant passkey, by password | `403` `{"error": "This account signs in with a passkey", "required": "passkey"}` |
 
-The password change comes first. Enrollment is only demanded from outside
-`safe_networks`; the flag stays set until then. If the account already has
-MFA, the flag is cleared at login. These answers are not failed logins for the
-rate limit; they are recorded as `security`/`secread` rows
+The password change comes first, then MFA, then the passkey. MFA enrollment is
+only demanded from outside `safe_networks`. These answers are not failed
+logins for the rate limit; they are recorded as `security`/`secread` rows
 (`event='login_requirement_pending'`).
+
+`passkey_enroll_open` lets the password alone register a user's first key
+without a second factor. It is set when a user is created or changed to a
+requirement that asks for a key they have not got, by `signin-reset`, by a
+sysop's `passkey-revoke` that leaves none, and for everyone who needs a key
+when the relying party changes; it is cleared when the key is registered.
 
 The routes below need no token. Each takes `username` and `password` again
 (plus `totp` for an account that has MFA, outside `safe_networks`), and is
@@ -230,14 +318,40 @@ rate-limited and failure-recorded like `authenticate`. A wrong credential is
 
 | Route | Body | Result |
 |---|---|---|
-| `POST /v1/users/authenticate/password` | `new_password` | `400` unless a change is pending, or if the new password fails the password rule (`error` and `password_policy`) or equals the current one. On success the flag is cleared, the change is recorded in `history` (`users` update, `security`/`rotate` `password_changed`), and the answer is that of a login: `403` `mfa_enrollment`, or `200` with the token body above |
+| `POST /v1/users/authenticate/password` | `new_password` | `400` unless a change is pending, or if the new password fails the password rule (`error` and `password_policy`) or equals the current one. On success the flag is cleared, the change is recorded in `history` (`users` update, `security`/`rotate` `password_changed`), and the answer is that of a login: `403` for what is still pending, or `200` with the token body above |
 | `POST /v1/users/authenticate/mfa` | — | `400` unless enrollment is pending (and no password change is). Returns `{"secret", "uri"}` |
-| `PUT /v1/users/authenticate/mfa` | `totp` | verifies the code against the secret from `POST`, stores it, clears the flag and answers `200` with the token body (`has_totp` and `totp_verified` true). `401` on a wrong code, counted |
+| `PUT /v1/users/authenticate/mfa` | `totp` | verifies the code against the secret from `POST`, stores it and answers like a login: `403` for what is still pending (the passkey, for `totp_or_passkey`), else `200` with the token body (`has_totp` and `totp_verified` true). `401` on a wrong code, counted |
+| `POST /v1/users/authenticate/passkey/enroll` | — | `400` unless a passkey is due and passkeys are on (`{"error": "Passkeys are not enabled", "passkeys_available": false}` when off); `403` `signin_reset` unless the code was just checked or `passkey_enroll_open` is set. Returns `{"publicKey", "challenge_id"}` (creation options and an integer challenge id, valid 5 minutes, once); the challenge remembers whether the code was checked. `400` with a `reason` (`metadata`, `limit`) when no registration can start |
+| `PUT /v1/users/authenticate/passkey/enroll` | `challenge_id`, `credential`, `name?` | username and password again, **not** the code: the challenge stands for it. `400` `{"error", "reason"}` for a registration that does not verify or does not fit (see "Passkey registration failures"). `400` `No passkey enrollment is pending` unless a passkey is due. On success the key is stored, `passkey_enroll_open` is cleared, and the answer is the `200` login answer with the token body (`amr` `passkey`): a password change and MFA enrolment are checked first, so nothing else can be pending |
 
-For a session that is already open, a flag set afterwards ends it: the next
-request answers `403` `Password change required`, or `MFA enrollment
-required` from outside `safe_networks`. Remote authentication and fixed API
-tokens are not affected.
+An open session is held to the same rules on every request, with the messages
+of the login's answers: `403` `Password change required`, `MFA enrollment
+required` (from outside `safe_networks`), `Passkey enrollment required`
+(with `required`, `passkeys_needed`, `passkeys_minimum` and `passkeys_have`),
+`Ask an administrator to reset your sign-in`, and, for a password session of a
+`passkey` user who now has a key, `Passkey sign-in required`. A session that
+began with a passkey ends with `401` `Session ended: passkey no longer valid`
+once its key is removed or stops meeting the passkey policy. Remote
+authentication and fixed API tokens are not affected.
+
+### Step-up proof
+
+Adding or removing one's own passkey, removing one's own TOTP secret under the
+requirement `passkey`, and an admin loosening their own sign-in requirement
+need a fresh proof in the same request, as `stepup`. Its kind is the
+strongest the user has:
+
+| Kind | `stepup` value |
+|---|---|
+| `passkey`, the user has a compliant passkey | `{"challenge_id", "credential"}`: an assertion for the options and `challenge_id` of `POST /v1/users/{id}/passkeys/stepup` |
+| `totp`, the user has the authenticator app | `{"totp": "123456"}` |
+| `password`, nothing else | `{"password": "..."}` |
+
+`GET /v1/users/{id}/passkeys` shows the kind wanted as `stepup` (for the user
+themselves). A missing or wrong proof is `401` `{"error": "Step-up
+verification failed", "stepup": "<kind>"}`, recorded as the security event
+`stepup_failed` and counted for the login rate limit like a failed login;
+the proof is checked after the rate limit, so a blocked network gets `429`.
 
 ### Login rate limit
 
@@ -245,7 +359,9 @@ Before the credentials are examined, the caller's network is checked against
 the failures it has already produced. Past `login_ratelimit.max_failures`
 within `login_ratelimit.timespan` seconds, the call answers `429` with a
 `Retry-After` header and `{"error": ..., "retry_after": n}`. The window
-slides, so a block lifts itself as old failures age out.
+slides, so a block lifts itself as old failures age out. The same limit guards
+the routes of "Forced password change and MFA enrollment", the passkey sign-in and
+its options, and every step-up.
 
 Failures are counted per **network**, not per address: IPv4 `/24` and IPv6
 `/48` by default (`ipv4_prefix`, `ipv6_prefix`). An IPv6 customer gets an
@@ -260,7 +376,7 @@ address, the network and the request headers:
 | action | what it means | counted? |
 |---|---|---|
 | `login` | authentication succeeded | no |
-| `denied` | unknown username, wrong password, wrong TOTP code, or deactivated reseller | **yes** |
+| `denied` | unknown username, wrong password, wrong TOTP code, a failed passkey sign-in or step-up, or deactivated reseller | **yes** |
 | `secread` | turned away by the limit, or a credential disclosure | no |
 
 A registry password rotation is a `security` row too, with action `rotate` —
@@ -278,10 +394,10 @@ rate-limit bucket and none ever matches `safe_networks`.
 
 ### MFA gate
 
-Some routes require the *current* token to be MFA-verified — not
-`has_totp` without `totp_verified`, unless the request itself comes from a
-`safe_networks` address — or they answer `403`
-`{"error": "MFA verification required"}`:
+Some routes require the *current* token to be MFA-verified — not a password
+session of an account with TOTP or a compliant passkey (`needs_second_factor`),
+unless the request itself comes from a `safe_networks` address — or they
+answer `403` `{"error": "MFA verification required"}`:
 
 - every `admin` route (`Auth::requireAdmin()`: role `admin` plus the MFA check)
 - every `manager` route (`Auth::requireManager()`)
@@ -289,10 +405,11 @@ Some routes require the *current* token to be MFA-verified — not
 - `PUT /v1/changepassword/{id}` and `DELETE /v1/users/{id}/totp`, even on
   one's own account
 
-A login JWT passes when a code was checked at login, or when the account has
-no TOTP. A token from a safe-network login carries no `totp_verified` and
-passes only on requests from a safe network. Fixed API tokens and remote auth
-carry `has_totp: false`.
+A login JWT passes when a code was checked at login, when it began with a
+passkey, or when the account has neither TOTP nor a compliant passkey. A token
+from a safe-network login carries no `totp_verified` and passes only on
+requests from a safe network. Fixed API tokens and remote auth carry
+`has_totp: false` and `has_passkeys: false`.
 
 ### Set up TOTP (MFA) for a user
 
@@ -305,7 +422,9 @@ carry `has_totp: false`.
   Verifies against the *pending* secret and, on success, activates it.
   `400` if there's no pending setup, `401` if the code doesn't verify.
 - `DELETE /v1/users/{id}/totp` (self, their manager, or admin; MFA-verified)
-  — clears the active and any pending secret, disabling MFA.
+  — clears the active and any pending secret, disabling MFA. For one's own
+  account under the requirement `passkey` it takes a `stepup` in the body
+  (`401` `Step-up verification failed` otherwise).
 
 ### Fixed API tokens for scripted access
 
@@ -457,7 +576,9 @@ route → 404; wrong method → 405; uncaught exception → 500):
 ```
 
 Always a string, never nested, and there is **no** machine-readable `code`
-field — branch on the HTTP status. Matching the message text works but is
+field — branch on the HTTP status. A few answers carry more fields beside
+`error` (`required`, `reason`, `stepup`, `confirm_required`, `impact`,
+`retry_after`, ...); each is documented where it occurs. Matching the message text works but is
 brittle; the one place it is unavoidable is telling an expired token
 (`"Token has expired: ..."`) from an absent one, since both are 401. A client
 that needs that distinction is better off reading `exp` from the claims and
@@ -583,14 +704,78 @@ deactivated.
 
 | Method & path | Auth | Notes |
 |---|---|---|
-| `GET /v1/users` | user | an admin sees every user (`?reseller_id=` narrows it to one reseller), a manager their reseller's, a plain user only themselves. Rows: `id, active, role, reseller_id, reseller_name, username, max_token_age, max_idle_time, debug, notify_enabled, has_totp`, and for a manager or admin also `description, email, must_change_password, must_enroll_mfa`. Never password hashes |
+| `GET /v1/users` | user | an admin sees every user (`?reseller_id=` narrows it to one reseller), a manager their reseller's, a plain user only themselves. Rows: `id, active, role, reseller_id, reseller_name, username, max_token_age, max_idle_time, debug, notify_enabled, has_totp, signin_requirement, passkeys` (the compliant keys), `has_passkeys`, and for a manager or admin also `description, email, must_change_password`. Never password hashes |
 | `GET /v1/users/{id}` | user | same field set and scope, still `{"users": [row]}` — a one-element array, and `[]` for an unknown id or one the caller may not see |
-| `POST /v1/users` | manager | create; `201`. Required: `username`, `password`, `email`. Optional: `description`, `role` (default `user`; `admin` only in reseller 1), `reseller_id` (admin only, default 1; a manager's users join their own reseller), `notify_enabled` (default on for managers/admins, off for plain users), `active` (default `1`), `max_token_age`, `max_idle_time`, `debug` (admin only), `must_change_password`, `must_enroll_mfa` (0/1, default `0`). `400` if a required field is missing, the username is taken or empty or longer than 32 characters, `email` is not an address (at most 256 characters) or belongs to another account (`this e-mail address is already used by another account`; compared case-insensitively), `max_token_age` is not `null` or one of the lifetimes above, `max_idle_time` is not `null` or a non-negative whole number, or the role doesn't fit the reseller. The creation is recorded in `history` under the creating user |
-| `PUT /v1/users/{id}` | manager | update of the same field set (validated the same way); **every field is optional** — anything omitted keeps its current value (including `password`) — but the account must end up with a valid, unused `email` on every save, so an account without one cannot be saved until it is given one. `reseller_id` can never change (`400`). `404` for an unknown id |
+| `POST /v1/users` | manager | create; `201`. Required: `username`, `password`, `email`. Optional: `description`, `role` (default `user`; `admin` only in reseller 1), `reseller_id` (admin only, default 1; a manager's users join their own reseller), `notify_enabled` (default on for managers/admins, off for plain users), `active` (default `1`), `max_token_age`, `max_idle_time`, `debug` (admin only), `must_change_password` (0/1, default `0`), `signin_requirement` (`passkey`, `totp`, `totp_or_passkey` or `none`; default `totp`; `none` by an admin only, `403` otherwise). `must_enroll_mfa` is accepted and ignored. `400` if a required field is missing, the username is taken or empty or longer than 32 characters, `email` is not an address (at most 256 characters) or belongs to another account (`this e-mail address is already used by another account`; compared case-insensitively), `max_token_age` is not `null` or one of the lifetimes above, `max_idle_time` is not `null` or a non-negative whole number, or the role doesn't fit the reseller. The creation is recorded in `history` under the creating user |
+| `PUT /v1/users/{id}` | manager | update of the same field set (validated the same way); **every field is optional** — anything omitted keeps its current value (including `password`) — but the account must end up with a valid, unused `email` on every save, so an account without one cannot be saved until it is given one. `reseller_id` can never change (`400`). `404` for an unknown id. `signin_requirement` follows the rules of "Sign-in requirements"; `none` is for admins (`403` for a manager) and a requirement that needs a key is `400` while passkeys are off. Nobody may give themselves a weaker one (strongest first: `passkey`, `totp_or_passkey`, `totp`, `none`) except an admin, who sends a `stepup` in the same request (see "Step-up proof"): `400` with `stepup_required: true` and the kind wanted (`stepup`) without one, `401` `Step-up verification failed` for a wrong one; a fixed API token or remote auth cannot give it and gets `400`. Managers and users keep the `400` (`you cannot loosen your own sign-in requirement`). A change that asks for a key the user has not got opens their `passkey_enroll_open`. Recorded as the security event `signin_requirement_loosened` (`from`, `to`) besides the `history` row, and `signin_requirement_none` when it becomes `none` |
 | `DELETE /v1/users/{id}` | manager | deactivate (`active = 0`), with the same rules as setting it through `PUT` |
 | `GET /v1/users/{id}/notifications` | self, their manager, or admin | this user's own email notifications, `{"notifications": {"enabled": bool, "message_types": [...], "fulltext": "..."}, "message_types": [...]}` (the second `message_types` is the full allow-list, for a picker). `404` for an unknown user |
 | `PATCH /v1/users/{id}/notifications` | self, their manager, or admin | body: any of `enabled`, `message_types` (a list from the allow-list above) and `fulltext`; what is omitted stays. Returns `{"notifications": {...}}`. Only takes effect while the system-wide `smtp.recipient_mode` (see "Email (SMTP)") includes `user` |
 | `PATCH /v1/users/{id}/session` | self, their manager, or admin | body: `token_lifetime`, one of `5`, `10`, `15`, `30`, `60`, `90`, `120`, `240` minutes, or `null`/`""` for the default (15). `400` for any other value or one above the user's `max_token_age` (`240` when unset), `404` for an unknown user. Returns `{"session": {"token_lifetime": ..., "max_token_age": ...}}`; recorded in `history`. Applies from the next `renew-token` or login |
+
+### Passkeys
+
+Keys are registered by the user, never on their behalf. A manager or admin
+lists and removes the keys of users in their scope, and starts a user's sign-in
+over with `signin-reset`. The requests marked `stepup` carry the proof described
+in "Step-up proof". Challenges of the routes below are integers, valid 5
+minutes and usable once.
+
+| Method & path | Auth | Notes |
+|---|---|---|
+| `GET /v1/users/{id}/passkeys` | self, their manager, or admin | `{"passkeys": [{"id", "name", "aaguid", "model", "backup_eligible", "backup_state", "attestation_format", "attestation_verified", "compliant", "created", "last_used"}], "signin_requirement", "minimum", "compliant_count", "enroll_open", "passkeys_available"}`, plus `stepup` (the kind wanted) for the user themselves. `minimum` is the keys the requirement needs: 1 for `passkey` and `totp_or_passkey`, else 0. `model` is what the FIDO metadata calls the AAGUID, else the catalogue's name, else `null`. Never the credential id. `404` for an unknown user |
+| `POST /v1/users/{id}/passkeys/options` | self only | no body; `{"publicKey", "challenge_id"}`, creation options for a new key (user verification and a resident key required; ES256, EdDSA or RS256; attestation `direct` under `device_bound`, else `none`; the user's keys excluded). `400` `{"error": "Passkeys are not enabled", "passkeys_available": false}` while passkeys are off, `400` with `reason` `metadata` or `limit` when no registration can start |
+| `POST /v1/users/{id}/passkeys/stepup` | self only | no body; `{"publicKey", "challenge_id", "stepup": "passkey"}`, request options limited to the user's compliant keys. `400` `{"error": "No passkey to confirm with", "stepup": "<kind>"}` without a compliant key |
+| `POST /v1/users/{id}/passkeys` | self only | body `challenge_id`, `credential`, `stepup`, `name?` (at most 64 characters; default `Passkey n`). `201` `{"passkey": {...}}` and the fields of `GET` above. `400` `credential and challenge_id are required`, `400` `{"error", "reason"}` for a registration that fails (see below), `401` `Step-up verification failed`, `429` |
+| `PATCH /v1/users/{id}/passkeys/{pid}` | self only | body `{"name"}`; `{"passkey": {...}}`. `400` `name is required` for a missing, empty or over-long name, `404` `Passkey not found`. No step-up |
+| `DELETE /v1/users/{id}/passkeys/{pid}` | self (with `stepup` in the body), or their manager or admin | the fields of `GET` above. `400` `{"error", "minimum": 1}` if it is the last compliant key of a user whose requirement needs one: the way out is `signin-reset`. A key that no longer complies can always go. `404` `Passkey not found` |
+| `POST /v1/users/{id}/signin-reset` | manager, admin | no body. Removes every passkey and the TOTP secret, sets a generated temporary password, sets `must_change_password` and opens `passkey_enroll_open` for a requirement that needs a key; open sessions end at the next request. `{"users": [row], "temporary_password", "passkeys_revoked", "totp_removed", "enroll_open"}`: the password is shown once. `400` for oneself, `403` for a manager on an admin or another reseller's user, `404` for an unknown user |
+
+**Passkey registration failures.** A registration that does not verify or fit
+is `400` `{"error": "Passkey registration failed", "reason": "<code>"}` (or an
+`error` that says more, for `policy`, `metadata`, `limit` and `credential_id`),
+recorded as the security event `passkey_registration_failed`:
+
+| `reason` | Meaning |
+|---|---|
+| `malformed` | the credential or its fields cannot be read, or are too long |
+| `challenge` | the challenge is unknown, spent, expired, for another purpose or user, or not the one the response answers |
+| `type`, `origin`, `cross_origin`, `rp_id_hash` | the client data is of the wrong type, comes from an origin not in `origins`, from another origin's frame, or the key was made for another relying party |
+| `user_presence`, `user_verification` | the key did not report the touch or the PIN/biometrics check |
+| `algorithm`, `signature`, `backup_flags`, `user_handle`, `invalid` | the key uses another algorithm than ES256, EdDSA or RS256, a signature or flag does not verify, or the response is otherwise refused |
+| `attestation` | the attestation statement does not verify |
+| `credential_id` | the credential id is malformed, or the key is already registered |
+| `policy` | the key verifies but does not meet the passkey policy |
+| `metadata` | `device_bound` is set and FIDO's metadata is missing or out of date |
+| `limit` | the user already holds 10 keys |
+
+The passkey policy is one setting for the whole installation:
+
+| Method & path | Auth | Notes |
+|---|---|---|
+| `GET /v1/settings/passkeys` | admin | `{"passkeys": {"rp_id", "origins", "type", "models", "extra_aaguids"}, "in_use": {"passkeys", "users"}, "catalogue": {"security_keys": [{"key", "label"}], "builtin": [{"key", "label"}]}, "metadata": {"state", "serial", "next_update", "fetched_at", "entries", "overdue"}}`. `in_use` counts the keys registered and the users whose requirement needs one. `models` takes the catalogue's keys. `metadata.state` is `ok` (usable), `stale` (more than 7 days past `next_update`) or `missing`; `overdue` is true past `next_update` |
+| `POST /v1/settings/passkeys/impact` | admin | the same body as `PUT`, changing nothing: `{"keys_total", "keys_noncompliant", "users": [{"id", "username", "role", "signin_requirement", "compliant_before", "compliant_after", "minimum", "outcome"}], "admins_able_after"}`. `keys_noncompliant` counts keys that comply now and would not; `users` the active users whose compliant keys change, the worst first; `admins_able_after` the active admins who could still sign in. `outcome`: `ok`, `needs_enrolment` (they can register a key themselves: with a passkey they still have, the authenticator app or the open enrolment) or `locked_out` (only a reset helps). `400` `{"error"}` for a value the setting refuses |
+| `PUT /v1/settings/passkeys` | admin | any of `rp_id`, `origins`, `type`, `models`, `extra_aaguids` (`null` resets a field), and `confirm`. Answers the settings as `GET` does, plus the `impact`, and records `passkey_policy_changed` with the changed fields and the counts. `400` `{"error", "impact"}` and nothing saved when no active admin could sign in afterwards (`admins_able_after` 0). Changing `rp_id` while keys exist, or clearing it while users need keys, deletes every registered key and opens the enrolment for the users who need one: `400` `{"error", "confirm_required": true, "in_use": {"passkeys", "users"}, "impact"}` until `"confirm": true` is sent. Tightening the policy never opens a user's enrolment: those it locks out need `signin-reset` |
+
+`rp_id` is the host name the browser shows, such as `eppitnic.example.it`,
+without scheme, port or path; never an IP address (`localhost` is accepted for
+development), and empty switches passkeys off. Each of `origins` is an `https`
+origin (`http` only for `localhost`) equal to `rp_id` or below it, and at least
+one is needed while `rp_id` is set. `type` is `any` (any authenticator,
+attestation `none`) or `device_bound`: the registration asks for attestation
+`direct`, which has to chain to a root FIDO's metadata lists for the key's
+AAGUID; the key must not be able to sync; and its model must be among `models`
+and `extra_aaguids` (none given: any attested model). `none` and self
+attestation fail with `policy`, and `fido-u2f` never anchors (a U2F key has no
+AAGUID and cannot verify the user). Without current metadata no such
+registration starts (`400` `metadata`, also from `.../passkeys/options`), though
+keys already registered keep working. A model the metadata marks `REVOKED`,
+`USER_VERIFICATION_BYPASS`, `ATTESTATION_KEY_COMPROMISE`,
+`USER_KEY_REMOTE_COMPROMISE` or `USER_KEY_PHYSICAL_COMPROMISE` stops counting
+as `device_bound`, and the sessions begun with its keys end. `models` are the
+catalogue's keys: `yubikey5`, `yubikey_bio`, `yubico_security_key`,
+`google_titan`, `feitian`, `token2`, `swissbit`, `nitrokey`, `solokeys`,
+`thales` and `windows_hello`. `extra_aaguids` are UUIDs, not the all-zero one.
 
 ### Resellers
 
@@ -726,8 +911,8 @@ change made here or on the command line is validated and audited identically
 
 | Method & path | Auth | Notes |
 |---|---|---|
-| `GET /v1/cronjobs` | admin | every job's current settings, as `{"jobs": {"pdns": {...}, "domain_sync": {...}, "domain_reap_deletions": {...}, "poll_process": {...}, "keepalive": {...}}}`. Job-state fields (`cursor_id`, `last_run_at`) are included read-only, not part of what `PATCH` accepts |
-| `PATCH /v1/cronjobs/{job}` | admin | body = partial field map for that job, e.g. `{"enabled": true, "frequency_minutes": 10}`; `null` resets a field to its default (`pdns`: disabled, `ttl` 3600, `delay_hours` 12, `frequency_minutes` 15, empty `apis`/`nameservers`; `domain_sync`: enabled, `batch_size` 25, `frequency_minutes` 5; `domain_reap_deletions`: enabled, `frequency_minutes` 15; `poll_process`: enabled, `frequency_minutes` 5; `keepalive`: disabled). `400` with `{"error": "..."}` on an unknown job/field or a failed validator (the same message the CLI produces). Returns `{"job": "...", "settings": {...}}`, the job's full updated settings |
+| `GET /v1/cronjobs` | admin | every job's current settings, as `{"jobs": {"pdns": {...}, "domain_sync": {...}, "domain_reap_deletions": {...}, "poll_process": {...}, "passkey_challenge_purge": {...}, "passkey_metadata": {...}, "keepalive": {...}}}`. Job-state fields (`cursor_id`, `last_run_at`) are included read-only, not part of what `PATCH` accepts |
+| `PATCH /v1/cronjobs/{job}` | admin | body = partial field map for that job, e.g. `{"enabled": true, "frequency_minutes": 10}`; `null` resets a field to its default (`pdns`: disabled, `ttl` 3600, `delay_hours` 12, `frequency_minutes` 15, empty `apis`/`nameservers`; `domain_sync`: enabled, `batch_size` 25, `frequency_minutes` 5; `domain_reap_deletions`: enabled, `frequency_minutes` 15; `poll_process`: enabled, `frequency_minutes` 5; `passkey_challenge_purge`: enabled, `frequency_minutes` 1440; `passkey_metadata`: enabled, `frequency_minutes` 1440; `keepalive`: disabled). `400` with `{"error": "..."}` on an unknown job/field or a failed validator (the same message the CLI produces). Returns `{"job": "...", "settings": {...}}`, the job's full updated settings |
 
 `keepalive` is stored as a bare boolean; this route wraps it as
 `{"enabled": bool}` so every job has the same shape.
@@ -825,6 +1010,28 @@ What `data` holds depends on the event and is not a fixed schema; `security`
 rows carry at least `event`, the client address (`ip`) and the request
 `headers`, with `Authorization`, `Cookie` and `Proxy-Authorization` stored as
 `[redacted]`.
+
+The sign-in and passkey events are `security` rows with `data.event` one of:
+
+| `event` | `action` | When |
+|---|---|---|
+| `login_succeeded` | `login` | a sign-in succeeded; `method` is `pwd`, `pwd+otp` or `passkey`, and a passkey sign-in names the `credential` |
+| `login_failed` | `denied` | a wrong password or code, an unknown user, a failed passkey sign-in (`method` `passkey`, with the `reason`); counted for the rate limit |
+| `login_requirement_pending` | `secread` | the credentials were right and a setup is due (`required`); not counted |
+| `passkey_registered` | `secread` | a key was added (`credential`, `aaguid`, `attested`) |
+| `passkey_registration_failed` | `secread` | a registration was refused (`reason`) |
+| `passkey_removed` | `secread` | a key was removed, by the user, a manager or admin, or a sysop from the CLI |
+| `passkey_counter_regression` | `secread` | a key's signature counter did not advance |
+| `stepup_failed` | `denied` | a step-up proof was wrong (`method`, `reason`); counted |
+| `signin_reset` | `secread` | a user's sign-in was reset (`target`, `passkeys_revoked`, `totp_removed`) |
+| `signin_requirement_none` | `secread` | a requirement became `none` (`target`) |
+| `signin_requirement_loosened` | `secread` | an admin loosened their own requirement (`from`, `to`) |
+| `passkey_policy_changed` | `secread` | the passkey policy was changed (`changes`, and the impact's counts) |
+| `passkeys_invalidated` | `secread` | a changed `rp_id` deleted the registered keys (`passkeys`, `users`) |
+
+A change of the passkey policy is also a `history` row with `object`
+`passkeys`, and a key added, renamed or removed one with `object` `users` for
+the account.
 
 ## Limitations to design around
 

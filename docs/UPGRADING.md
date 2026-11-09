@@ -2,7 +2,8 @@
 
 ## From 7.0 to 7.1
 
-Back up the database, pull the new code or image and start it. The schema
+Back up the database, then pull the new image, or pull the new code and run
+`composer install` (7.1 needs PHP 8.2 or later), and start it. The schema
 upgrades itself (`070000` to `070100`) on the first connection. Then:
 
 1. **Check `history` for removed e-mail addresses.** `users.email` is now
@@ -32,6 +33,49 @@ upgrades itself (`070000` to `070100`) on the first connection. Then:
 5. **Registry password:** `config epp-password` rotates it; if the registry
    already holds a new one, store it with Settings, "use an existing
    password", or `config epp-password --force`.
+6. **Set the relying party to switch passkeys on.** Passkeys stay off until
+   you do, and no user can be given a requirement that needs one:
+
+   ```bash
+   bin/eppitnic config passkeys --rp-id=<HOST_NAME> --origin=https://<HOST_NAME>
+   ```
+
+   `<HOST_NAME>` is the host name users open in the browser, never an IP
+   address; each origin is an `https` origin at or below it. Settings does the
+   same. Changing the host name later deletes every registered passkey.
+7. **Review the users on `none`.** An existing user with an authenticator app
+   or a pending `must_enroll_mfa` now has the sign-in requirement `totp`; every
+   other user has `none` and signs in with the password alone, as before.
+   Raise them with `user signin-requirement`, `PUT /v1/users/{id}` or the user
+   dialog. New users, and the first admin `eppitnic setup` creates, start on
+   `totp`.
+
+   ```sql
+   SELECT id, username, role FROM users WHERE signin_requirement = 'none';
+   ```
+
+8. **If you set a relying party, let the server reach the FIDO hosts over
+   HTTPS.** The daily `passkey_metadata` job downloads the FIDO metadata that
+   `device_bound` passkeys are checked against, from `mds3.fidoalliance.org`,
+   which redirects to `mds.fidoalliance.org`: allow both (port 443) in the
+   firewall and proxy. Without that access it fails and `cron run` exits `70`;
+   either switch the job off if you will not use `device_bound`, or import the
+   file by hand:
+
+   ```bash
+   bin/eppitnic config passkey-metadata-set enabled false
+   bin/eppitnic passkey metadata --file=<BLOB_FILE>
+   ```
+
+   The crontab line stays the same: `cron run` also runs
+   `passkey_challenge_purge` and `passkey_metadata`, both on by default. While
+   passkeys are off, `passkey_metadata` does nothing and never fails.
+9. **Update API clients and scripts.** `must_enroll_mfa` is accepted and
+   ignored, and `GET /v1/users` no longer returns it; use
+   `signin_requirement`. `user create --must-enroll-mfa` is gone. A login can
+   now also answer `403` with `required` set to `passkey_enrollment`,
+   `passkey` or `signin_reset` (see "Forced password change and MFA
+   enrollment" in [API.md](API.md)).
 
 ## From 6.x to 7.0
 
@@ -43,7 +87,7 @@ neither. Rehearse on a staging copy.
 
 ## Prerequisites
 
-- PHP 8.1 or later with the intl extension, and
+- PHP 8.2 or later with the intl extension, and
   [Composer](https://getcomposer.org/) — dependencies are no longer shipped in
   the repository.
 - A full backup of the 6.x database, and a staging copy to rehearse on.

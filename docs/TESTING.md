@@ -39,8 +39,10 @@ vendor/bin/phpunit --filter <TEST_NAME>
 
 ### Tests that need a local MariaDB
 
-`Setup\InstallerTest` and `Setup\SchemaInstallerTest` also drive a real,
-disposable database: `mysql:host=localhost` as the current shell user with no
+`Setup\InstallerTest`, `Setup\SchemaInstallerTest` and
+`Setup\PasskeySchemaTest` (the 7.1 upgrade and its re-run, the fresh install,
+binary credential ids and the foreign keys) also drive a real, disposable
+database: `mysql:host=localhost` as the current shell user with no
 password (local socket authentication), with privileges to create and drop a
 database. Without one reachable, those tests skip themselves rather than
 fail, and the run ends with `OK, but some tests were skipped!`.
@@ -51,6 +53,20 @@ fail, and the run ends with `OK, but some tests were skipped!`.
 `tests/fixtures/responses/`. They were captured with
 `tests/capture-responses.php`, a maintainer tool that anonymises responses out
 of a populated installation's database; ordinary test runs don't need it.
+
+### Passkey tests
+
+The passkey tests need neither an authenticator nor a network.
+`tests/Support/SoftAuthenticator.php` is a software authenticator that answers
+the options WebAuthn produces, and every field a verifier checks can be forged,
+so a test breaks one thing at a time. `tests/Support/TestPki.php` builds
+throw-away certificate authorities, attestation certificates and signed FIDO
+metadata BLOBs, so no test depends on the real FIDO root.
+
+`AttestationRecordedTest` replays registrations recorded from real devices
+(packed, TPM and fido-u2f) in `tests/fixtures/attestation/`. They come from the
+test suite of `web-auth/webauthn-framework`; its `NOTICE` file carries their
+licence.
 
 ## Test against the live test registry
 

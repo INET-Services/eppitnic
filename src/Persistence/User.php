@@ -2,6 +2,8 @@
 
 namespace Eppitnic\Persistence;
 
+use Eppitnic\Service\PasskeyPolicy;
+use Eppitnic\Service\SigninRequirement;
 use Eppitnic\Support\PasswordPolicy;
 use Eppitnic\Support\Validate;
 use RedBeanPHP\R;
@@ -27,11 +29,37 @@ final class User
         $columns = 'id, active, role, reseller_id,
             (SELECT name FROM resellers r WHERE r.id = users.reseller_id) AS reseller_name,
             username, max_token_age, max_idle_time, debug, notify_enabled,
-            totp_secret IS NOT NULL AS has_totp';
+            totp_secret IS NOT NULL AS has_totp, signin_requirement';
 
         return $isManager
-            ? "{$columns}, description, email, must_change_password, must_enroll_mfa"
+            ? "{$columns}, description, email, must_change_password"
             : $columns;
+    }
+
+    /**
+     * Add each user's compliant passkeys: `passkeys` (a count) and
+     * `has_passkeys`. One query for all of them.
+     *
+     * @param array<int, array> $rows users rows with an id
+     * @return array<int, array>
+     */
+    public static function withPasskeyCounts(array $rows): array {
+        $counts = PasskeyPolicy::countsFor(array_map(static fn(array $row): int => (int) $row['id'], $rows));
+        foreach ($rows as &$row) {
+            $row['passkeys'] = $counts[(int) $row['id']] ?? 0;
+            $row['has_passkeys'] = $row['passkeys'] > 0;
+        }
+        return $rows;
+    }
+
+    /**
+     * @return string|null why $mode cannot be stored, or null
+     */
+    public static function signinRequirementError(mixed $mode): ?string {
+        if ( ! in_array($mode, SigninRequirement::MODES, true)) {
+            return 'signin_requirement must be one of: ' . implode(', ', SigninRequirement::MODES);
+        }
+        return null;
     }
 
     /**
@@ -75,10 +103,13 @@ final class User
      * @param int|null $actorId who creates it, for history (null: nobody, as
      *                 when the installer makes the first admin)
      * @param bool|null $notifyEnabled overrides that default
+     * @param string $signinRequirement see SigninRequirement::MODES
      * @throws UsernameTaken if $username is already in use
      * @throws \InvalidArgumentException if $password does not meet
-     *                       PasswordPolicy, $role does not fit $resellerId, or
-     *                       $email is given and fails emailError()
+     *                       PasswordPolicy, $role does not fit $resellerId,
+     *                       $signinRequirement is unknown or wants keys while
+     *                       passkeys are off, or $email is given and fails
+     *                       emailError()
      * @return int the new row's id
      */
     public static function create(
@@ -89,16 +120,22 @@ final class User
         int $resellerId = 1,
         string $role = 'user',
         bool $mustChangePassword = false,
-        bool $mustEnrollMfa = false,
         ?int $actorId = null,
         bool $active = true,
         ?int $maxTokenAge = null,
         ?int $maxIdleTime = null,
         bool $debug = false,
-        ?bool $notifyEnabled = null
+        ?bool $notifyEnabled = null,
+        string $signinRequirement = SigninRequirement::TOTP
     ): int {
         if (($error = self::roleError($role, $resellerId)) !== null) {
             throw new \InvalidArgumentException($error);
+        }
+        if (($error = self::signinRequirementError($signinRequirement)) !== null) {
+            throw new \InvalidArgumentException($error);
+        }
+        if (UserRules::keysWantedButOff($signinRequirement)) {
+            throw new \InvalidArgumentException(UserRules::PASSKEYS_OFF);
         }
         // The last point before a password becomes an uninspectable hash, and
         // reached from the installer, the CLI and anything added later. Callers
@@ -117,9 +154,11 @@ final class User
 
         R::exec("
             INSERT INTO users (reseller_id, role, description, username, password, email, notify_enabled, active,
-                               max_token_age, max_idle_time, debug, must_change_password, must_enroll_mfa)
+                               max_token_age, max_idle_time, debug, must_change_password,
+                               signin_requirement, passkey_enroll_open)
             VALUES (:reseller_id, :role, :description, :username, :password, :email, :notify_enabled, :active,
-                    :max_token_age, :max_idle_time, :debug, :must_change_password, :must_enroll_mfa)
+                    :max_token_age, :max_idle_time, :debug, :must_change_password,
+                    :signin_requirement, :enroll_open)
         ", [
             ':reseller_id'    => $resellerId,
             ':role'           => $role,
@@ -133,11 +172,15 @@ final class User
             ':max_idle_time'  => $maxIdleTime,
             ':debug'          => (int) $debug,
             ':must_change_password' => (int) $mustChangePassword,
-            ':must_enroll_mfa'      => (int) $mustEnrollMfa,
+            ':signin_requirement'   => $signinRequirement,
+            ':enroll_open'          => (int) SigninRequirement::needsKeys($signinRequirement),
         ]);
 
         $id = (int) R::getInsertID();
-        History::record('users', $id, 'create', ['username' => $username, 'role' => $role, 'reseller_id' => $resellerId], $actorId);
+        History::record('users', $id, 'create', [
+            'username' => $username, 'role' => $role, 'reseller_id' => $resellerId, 'signin_requirement' => $signinRequirement,
+            'passkey_enroll_open' => (int) SigninRequirement::needsKeys($signinRequirement),
+        ], $actorId);
 
         return $id;
     }

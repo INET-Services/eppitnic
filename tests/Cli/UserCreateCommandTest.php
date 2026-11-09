@@ -22,7 +22,7 @@ final class UserCreateCommandTest extends TestCase
         if ( ! R::hasDatabase('default')) {
             R::setup('sqlite::memory:');
         }
-        foreach (['users', 'resellers', 'history'] as $table) {
+        foreach (['users', 'resellers', 'history', 'passkeys'] as $table) {
             R::exec("DROP TABLE IF EXISTS {$table}");
         }
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -73,5 +73,74 @@ final class UserCreateCommandTest extends TestCase
         $this->expectExceptionMessage('this e-mail address is already used by another account');
 
         $this->create(['--email=ROOT@example.it', 'carol']);
+    }
+
+    public function testANewUserStartsWithTotp(): void {
+        $this->create(['--email=carol@example.it', 'carol']);
+
+        $this->assertSame('totp', $this->requirementOf('carol'));
+    }
+
+    private function enablePasskeys(): void {
+        Config::loadForTesting(['passkeys' => [
+            'rp_id' => 'localhost', 'origins' => ['http://localhost:5173'], 'type' => 'any', 'models' => [], 'extra_aaguids' => [],
+        ]]);
+    }
+
+    public function testTheRequirementIsSet(): void {
+        $this->enablePasskeys();
+        $this->create(['--email=carol@example.it', '--signin-requirement=passkey', 'carol']);
+        $this->create(['--email=dave@example.it', '--signin-requirement=totp_or_passkey', 'dave']);
+
+        $this->assertSame('passkey', $this->requirementOf('carol'));
+        $this->assertSame('totp_or_passkey', $this->requirementOf('dave'));
+        $this->assertStringContainsString('passkey', (string) R::getCell("SELECT data FROM history WHERE object = 'users' AND action = 'create' ORDER BY id LIMIT 1"));
+    }
+
+    public function testAUserWhoNeedsAKeyStartsWithTheEnrolmentOpenAndOthersWithItClosed(): void {
+        $this->enablePasskeys();
+        foreach (['passkey', 'totp_or_passkey', 'totp', 'none'] as $i => $mode) {
+            $this->create(["--email=u{$i}@example.it", "--signin-requirement={$mode}", "user{$i}"]);
+        }
+
+        $this->assertSame([1, 1, 0, 0], array_map('intval', R::getCol('SELECT passkey_enroll_open FROM users WHERE id > 1 ORDER BY id')));
+    }
+
+    public function testAKeyRequirementIsRefusedWhilePasskeysAreOff(): void {
+        foreach (['passkey', 'totp_or_passkey'] as $mode) {
+            try {
+                $this->create(['--email=carol@example.it', "--signin-requirement={$mode}", 'carol']);
+                $this->fail("created with {$mode}");
+            } catch (UsageError $e) {
+                $this->assertStringContainsString('passkeys are not enabled', $e->getMessage());
+            }
+        }
+        $this->assertSame(0, (int) R::getCell("SELECT COUNT(*) FROM users WHERE username = 'carol'"));
+        $this->assertSame(0, $this->create(['--email=carol@example.it', '--signin-requirement=totp', 'carol']));
+    }
+
+    public function testCreatingWithNoneIsRecordedAsASecurityEvent(): void {
+        $this->create(['--email=carol@example.it', '--signin-requirement=none', 'carol']);
+
+        $data = json_decode((string) R::getCell("SELECT data FROM history WHERE object = 'security'"), true);
+        $this->assertSame(['signin_requirement_none', 'carol'], [$data['event'], $data['target']]);
+    }
+
+    public function testAnUnknownRequirementIsRefused(): void {
+        $this->expectException(UsageError::class);
+        $this->expectExceptionMessage('--signin-requirement must be one of');
+
+        $this->create(['--email=carol@example.it', '--signin-requirement=sms', 'carol']);
+    }
+
+    public function testTheOldEnrolmentFlagIsGone(): void {
+        $this->expectException(UsageError::class);
+        $this->expectExceptionMessage("unknown option '--must-enroll-mfa'");
+
+        $this->create(['--email=carol@example.it', '--must-enroll-mfa', 'carol']);
+    }
+
+    private function requirementOf(string $username): string {
+        return (string) R::getCell('SELECT signin_requirement FROM users WHERE username = ?', [$username]);
     }
 }

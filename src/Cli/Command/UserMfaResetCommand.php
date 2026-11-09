@@ -12,17 +12,11 @@ use Eppitnic\Persistence\UserRules;
 final class UserMfaResetCommand extends UserAccountCommand
 {
     public function describe(): string {
-        return 'remove MFA so users can log in without a code and enrol again';
+        return 'remove MFA; the sign-in requirement decides whether it must be set up again';
     }
 
     public function arguments(): string {
         return '<username|id>...';
-    }
-
-    public function options(): array {
-        return [
-            'must-enroll-mfa' => 'require MFA setup again at the next login outside the safe networks',
-        ];
     }
 
     public function run(): int {
@@ -33,7 +27,6 @@ final class UserMfaResetCommand extends UserAccountCommand
             throw new UsageError('give at least one username or id');
         }
         $actor = $this->actor();
-        $mustEnroll = $this->hasOption('must-enroll-mfa');
 
         foreach ($names as $ref) {
             $user = $this->findUser($ref);
@@ -54,12 +47,8 @@ final class UserMfaResetCommand extends UserAccountCommand
                 continue;
             }
 
-            UserRules::resetMfa($id, $actor->userId, $mustEnroll);
-            $this->record(
-                "MFA removed for '{$user['username']}'"
-                    . ($mustEnroll ? ', must set it up again at the next login' : ''),
-                $record + ['changed' => true, 'must_enroll_mfa' => $mustEnroll]
-            );
+            UserRules::resetMfa($id, $actor->userId);
+            $this->record("MFA removed for '{$user['username']}'", $record + ['changed' => true]);
         }
         return $this->outcome(INVALID_INPUT);
     }

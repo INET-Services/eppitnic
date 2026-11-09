@@ -50,6 +50,14 @@ CREATE TABLE `users` (
   `totp_secret`           varchar(64),
   `totp_secret_pending`   varchar(64),
   `must_enroll_mfa`       tinyint NOT NULL DEFAULT 0,
+  -- what a login must prove (see Service\WebAuthn): a passkey, a TOTP code,
+  -- either, or nothing beyond the password
+  `signin_requirement`    enum('passkey','totp','totp_or_passkey','none') NOT NULL DEFAULT 'totp',
+  -- 1: the password alone may register this user's first key; set when a
+  -- key becomes required, cleared once the minimum is reached
+  `passkey_enroll_open`   tinyint NOT NULL DEFAULT 0,
+  -- random, handed to authenticators as the user handle; never the id
+  `webauthn_handle`       varbinary(64) NULL,
   `max_token_age`         int,
   `token_lifetime`        smallint unsigned NULL,
   `max_idle_time`         int,
@@ -61,6 +69,7 @@ CREATE TABLE `users` (
   UNIQUE KEY (`api_token`),
   UNIQUE KEY (`username`),
   UNIQUE KEY (`email`),
+  UNIQUE KEY (`webauthn_handle`),
   -- RESTRICT, not CASCADE: MariaDB refuses a CHECK over a cascading column
   CONSTRAINT FOREIGN KEY (reseller_id) REFERENCES resellers(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT `admins_belong_to_reseller_1` CHECK (`role` <> 'admin' OR `reseller_id` = 1)
@@ -93,6 +102,60 @@ CREATE TABLE `password_reset_attempts` (
   KEY (`email_hash`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- credential_id is the raw id the authenticator chose; source is the
+-- WebAuthn library's credential record as JSON
+CREATE TABLE `passkeys` (
+  `id`                    serial,
+  `user_id`               bigint unsigned NOT NULL,
+  `credential_id`         varbinary(1023) NOT NULL,
+  `source`                longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`source`)),
+  `aaguid`                char(36) NOT NULL,
+  `sign_count`            int unsigned NOT NULL DEFAULT 0,
+  `backup_eligible`       tinyint NOT NULL DEFAULT 0,
+  `backup_state`          tinyint NOT NULL DEFAULT 0,
+  `attestation_format`    varchar(32) NOT NULL,
+  `attestation_verified`  tinyint NOT NULL DEFAULT 0,
+  `transports`            varchar(128) NULL,
+  `name`                  varchar(64) NOT NULL,
+  `created_at`            datetime NOT NULL,
+  `last_used_at`          datetime NULL,
+  `last_used_ip`          varchar(45) NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY (`credential_id`),
+  KEY (`user_id`),
+  CONSTRAINT FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Only a SHA-256 of the challenge is kept; used_at is set when it is spent.
+-- A login challenge is signed, not stored: its row appears when it is spent,
+-- and the unique hash is what refuses a second use. context is what the
+-- request that issued it had verified.
+CREATE TABLE `webauthn_challenges` (
+  `id`                    serial,
+  `purpose`               enum('register','login','stepup') NOT NULL,
+  `user_id`               bigint unsigned NULL,
+  `challenge_hash`        char(64) NOT NULL,
+  `context`               varchar(16) NULL,
+  `created_at`            datetime NOT NULL,
+  `expires_at`            datetime NOT NULL,
+  `used_at`               datetime NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY (`challenge_hash`),
+  KEY (`expires_at`),
+  KEY (`user_id`),
+  CONSTRAINT FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- FIDO MDS3 entries by AAGUID
+CREATE TABLE `authenticator_metadata` (
+  `aaguid`                char(36) NOT NULL,
+  `description`           varchar(255) NULL,
+  `status`                varchar(64) NULL,
+  `entry`                 longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`entry`)),
+  `updated_at`            datetime NOT NULL,
+  PRIMARY KEY (`aaguid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Also holds `security` rows for non-mutating events (e.g. credential
 -- reads, action='secread') -- hence `history`, not `changelog`.
 CREATE TABLE `history` (
@@ -101,7 +164,7 @@ CREATE TABLE `history` (
   -- nullable: a login against a nonexistent username has no user to
   -- attribute it to; defaulting to user 1 would misattribute it.
   `user_id`               bigint unsigned DEFAULT NULL,
-  `object`                enum('users', 'contacts', 'domains', 'security', 'cronjobs', 'epp', 'smtp', 'remote_auth', 'trusted_proxies', 'resellers', 'region', 'allowed_origins', 'debugfile', 'dnssec') NOT NULL,
+  `object`                enum('users', 'contacts', 'domains', 'security', 'cronjobs', 'epp', 'smtp', 'remote_auth', 'trusted_proxies', 'resellers', 'region', 'allowed_origins', 'debugfile', 'dnssec', 'passkeys') NOT NULL,
   `object_id`             int(11) NOT NULL,
   -- 'request': a registration or transfer-in a user asked for (object
   -- 'domains'), what the daily reseller quota counts; 'rotate': the
@@ -333,4 +396,14 @@ INSERT INTO `settings` (`key`, `value`) VALUES
   -- remote_auth: off by default (see Api\Auth/Service\RemoteAuthSettings).
   -- header unset means server mode (REMOTE_USER); set it only when a
   -- trusted proxy injects it. `config remote-auth-set`, `/v1/remote-auth`.
-  ('remote_auth', '{"enabled":false,"header":null}');
+  ('remote_auth', '{"enabled":false,"header":null}'),
+  -- passkeys: rp_id empty = disabled (see Service\PasskeySettings). origins:
+  -- https origins at or below rp_id. type: any|device_bound. models and
+  -- extra_aaguids narrow device_bound.
+  ('passkeys', '{"rp_id":"","origins":[],"type":"any","models":[],"extra_aaguids":[]}'),
+  -- passkey_challenge_purge: deletes expired WebAuthn challenges, daily.
+  ('passkey_challenge_purge', '{"enabled":true,"frequency_minutes":1440,"last_run_at":null}'),
+  -- passkey_metadata: fetches the FIDO MDS3 BLOB, daily; passkey_metadata_blob
+  -- is the one in authenticator_metadata (serial, next_update, fetched_at).
+  ('passkey_metadata', '{"enabled":true,"frequency_minutes":1440,"last_run_at":null}'),
+  ('passkey_metadata_blob', '{"serial":null,"next_update":null,"fetched_at":null}');

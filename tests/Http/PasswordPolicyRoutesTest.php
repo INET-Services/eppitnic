@@ -43,7 +43,7 @@ final class PasswordPolicyRoutesTest extends TestCase
         R::exec("CREATE TABLE users (id INTEGER PRIMARY KEY, reseller_id INTEGER DEFAULT 1, role TEXT DEFAULT 'user',
                  description TEXT, username TEXT, password TEXT, email TEXT, notify_enabled INTEGER DEFAULT 0,
                  active INTEGER DEFAULT 1, totp_secret TEXT,
-                 must_change_password INTEGER DEFAULT 0, must_enroll_mfa INTEGER DEFAULT 0, max_token_age INTEGER DEFAULT 60, token_lifetime INTEGER, max_idle_time INTEGER DEFAULT 30, last_activity TEXT,
+                 must_change_password INTEGER DEFAULT 0, must_enroll_mfa INTEGER DEFAULT 0, signin_requirement TEXT NOT NULL DEFAULT 'none', passkey_enroll_open INTEGER DEFAULT 0, webauthn_handle BLOB, max_token_age INTEGER DEFAULT 60, token_lifetime INTEGER, max_idle_time INTEGER DEFAULT 30, last_activity TEXT,
                  debug INTEGER DEFAULT 0)");
         TestAccounts::ensureReseller(1);
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,

@@ -48,6 +48,9 @@ final class TestAccounts
             'totp_secret_pending'  => 'TEXT',
             'must_change_password' => 'INTEGER NOT NULL DEFAULT 0',
             'must_enroll_mfa'      => 'INTEGER NOT NULL DEFAULT 0',
+            'signin_requirement'   => "TEXT NOT NULL DEFAULT 'none'",
+            'passkey_enroll_open'  => 'INTEGER NOT NULL DEFAULT 0',
+            'webauthn_handle'      => 'BLOB',
             'api_token'            => 'TEXT',
             'api_token_expires'    => 'INTEGER NOT NULL DEFAULT 0',
             'notify_enabled'       => 'INTEGER NOT NULL DEFAULT 0',
@@ -60,9 +63,30 @@ final class TestAccounts
             }
         }
 
+        self::ensurePasskeyTables();
+
         R::exec('INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)', [$id, $username ?? "user{$id}"]);
         R::exec('UPDATE users SET reseller_id = ?, role = ?, active = 1 WHERE id = ?', [$resellerId, $role, $id]);
         R::exec('UPDATE users SET email = ? WHERE id = ? AND email IS NULL', ["user{$id}@example.test", $id]);
+    }
+
+    /**
+     * The tables Auth reads for a user with passkeys. Test users default to
+     * `none` where the schema's default is `totp`, so a test that is not about
+     * sign-in is not asked to set up MFA first.
+     */
+    public static function ensurePasskeyTables(): void {
+        R::exec('CREATE TABLE IF NOT EXISTS passkeys (
+            id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, credential_id BLOB NOT NULL UNIQUE,
+            source TEXT NOT NULL, aaguid TEXT NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0,
+            backup_eligible INTEGER NOT NULL DEFAULT 0, backup_state INTEGER NOT NULL DEFAULT 0,
+            attestation_format TEXT NOT NULL, attestation_verified INTEGER NOT NULL DEFAULT 0,
+            transports TEXT, name TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, last_used_ip TEXT)');
+        R::exec('CREATE TABLE IF NOT EXISTS webauthn_challenges (
+            id INTEGER PRIMARY KEY, purpose TEXT NOT NULL, user_id INTEGER, challenge_hash TEXT NOT NULL UNIQUE,
+            context TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)');
+        R::exec('CREATE TABLE IF NOT EXISTS authenticator_metadata (
+            aaguid TEXT PRIMARY KEY, description TEXT, status TEXT, entry TEXT NOT NULL, updated_at TEXT NOT NULL)');
     }
 
     public static function ensureReseller(int $id, ?string $name = null, int $maxOperations = 0): void {

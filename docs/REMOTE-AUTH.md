@@ -21,8 +21,10 @@ without a login screen.
   of an existing, active eppitnic user; case does not matter. Users are not
   created automatically, and role, reseller and quota still come from the
   local user.
-- **Two factors:** eppitnic does not ask for its own TOTP code. If you need
-  MFA, enforce it at the web server.
+- **Two factors:** eppitnic does not ask for its own TOTP code or a passkey,
+  and a user's sign-in requirement does not apply to a remote sign-in: the web
+  server authenticates. If you need MFA, enforce it at the web server. The
+  requirement still holds for the password fallback below.
 - **Bearer tokens take precedence.** A request with `Authorization: Bearer …`
   is authenticated by that token, so scripts using API tokens keep working.
   Remote authentication applies to every other request.

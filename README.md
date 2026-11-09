@@ -1,9 +1,9 @@
 # Requirements
 
-1. PHP 8.1.0 or newer (verified against both the codebase's own syntax and
+1. PHP 8.2.0 or newer (verified against both the codebase's own syntax and
    every Composer dependency's declared PHP requirement; the code itself is
-   8.0-compatible, but `spomky-labs/otphp` — which provides TOTP/MFA — and its
-   `symfony/deprecation-contracts` dependency bind the minimum at `>=8.1`)
+   8.0-compatible, but `web-auth/webauthn-lib` — which provides passkeys —
+   binds the minimum at `>=8.2`)
 2. [Composer](https://getcomposer.org/), to install the third-party
    dependencies declared in `composer.json` — run `composer install` before
    first use
