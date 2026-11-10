@@ -255,6 +255,14 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   and an `xn--` label that is not valid punycode stays as typed instead of
   raising an error.
 
+### About
+
+- `GET /v1/about` returns `commit` (short hash) and `built` (UTC time, ISO 8601)
+  from a `BUILD.json` in the application root, which the Docker images carry
+  (build arguments `COMMIT` and `BUILT`, set by `deploy/release-images.sh`) and
+  a release packaged by hand can add. In a git checkout without that file,
+  `commit` is `HEAD` and `built` is `null`; elsewhere both are `null`.
+
 ### CLI
 
 - `user create` requires `--email`.

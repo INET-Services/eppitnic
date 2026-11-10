@@ -35,6 +35,17 @@ COPY . .
 RUN composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader \
     && php docker/notices.php /app > /app/THIRD-PARTY-NOTICES.txt
 
+# For the About screen (src/Support/About.php), from deploy/release-images.sh.
+# Always written, so the runtime stage has a file to copy and a stale one from
+# the build context never ships; `{}` means unknown.
+ARG COMMIT=
+ARG BUILT=
+RUN if [ -n "$COMMIT" ]; then \
+        printf '{"commit":"%s","built":"%s"}\n' "$COMMIT" "$BUILT" > /app/BUILD.json; \
+    else \
+        echo '{}' > /app/BUILD.json; \
+    fi
+
 FROM base AS runtime
 
 # nginx: this application's own front controller, not the base image's.
@@ -73,6 +84,7 @@ COPY --from=builder /app/public         ./public
 COPY --from=builder /app/src            ./src
 COPY --from=builder /app/vendor         ./vendor
 COPY --from=builder /app/composer.json  ./composer.json
+COPY --from=builder /app/BUILD.json     ./BUILD.json
 
 # The packages' own license files (the LGPL one among them) stay in vendor/;
 # the notices file lists them all.
@@ -100,10 +112,14 @@ RUN chmod +x /docker/entrypoint.sh /docker/start-web.sh \
 ENV EPPITNIC_CONFIG_DIR=/data/config \
     EPPITNIC_VAR_DIR=/data/var
 
-# VERSION is passed by deploy/release-images.sh (APP_VERSION).
+# VERSION, COMMIT and BUILT come from deploy/release-images.sh.
 ARG VERSION=dev
+ARG COMMIT=
+ARG BUILT=
 LABEL org.opencontainers.image.title="eppitnic" \
       org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$COMMIT" \
+      org.opencontainers.image.created="$BUILT" \
       org.opencontainers.image.licenses="BSD-3-Clause" \
       org.opencontainers.image.source="https://github.com/INET-Services/eppitnic"
 

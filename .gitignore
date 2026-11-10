@@ -6,6 +6,9 @@
 /data/
 compose.override.yaml
 
+# written at packaging time (see Eppitnic\Support\About)
+/BUILD.json
+
 # self-test leftovers (see Eppitnic\Selftest\Leftovers)
 /var/
 

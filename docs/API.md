@@ -954,7 +954,7 @@ invalid hostname, a duplicate or more than 6 entries is `400`.
 
 | Method & path | Auth | Notes |
 |---|---|---|
-| `GET /v1/about` | any user | `{"name", "version", "license", "copyright", "dependencies": [{"name", "version", "license"}]}`. `version` is the release version, `APP_VERSION`. `dependencies` lists every non-dev Composer package, transitive included, sorted by name; a package's `license` is its SPDX identifiers joined with ` OR ` |
+| `GET /v1/about` | any user | `{"name", "version", "license", "copyright", "commit", "built", "dependencies": [{"name", "version", "license"}]}`. `version` is the release version, `APP_VERSION`. `commit` is the short hash of the commit and `built` the UTC time (ISO 8601) it was packaged, both from `BUILD.json` in the application root, which the release packaging writes (`{"commit": "…", "built": "…"}`). Without that file, a git checkout reports its `HEAD` as `commit` and `null` as `built`; anything else reports both as `null`. `dependencies` lists every non-dev Composer package, transitive included, sorted by name; a package's `license` is its SPDX identifiers joined with ` OR ` |
 
 ### Regional settings
 

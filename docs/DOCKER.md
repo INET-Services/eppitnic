@@ -206,6 +206,10 @@ docker compose up -d
 them again. `--no-cache` is what clears BuildKit's layer cache; removing the
 image alone doesn't.
 
+A build from this repository shows no commit or build time under About: the
+build context has no git history and `COMMIT` and `BUILT` are not set. The
+published images carry both.
+
 Neither command touches `./data`. It is a bind mount, not a named volume, so
 `config.php` and the self-test notes survive.
 

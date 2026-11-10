@@ -55,6 +55,8 @@ final class AboutRouteTest extends TestCase
         $this->assertSame(APP_VERSION, $body['version']);
         $this->assertSame('BSD-3-Clause', $body['license']);
         $this->assertStringStartsWith('Copyright (c)', $body['copyright']);
+        $this->assertArrayHasKey('commit', $body);
+        $this->assertArrayHasKey('built', $body);
 
         $names = array_column($body['dependencies'], 'name');
         $this->assertContains('slim/slim', $names);
