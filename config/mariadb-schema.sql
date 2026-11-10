@@ -216,7 +216,8 @@ CREATE TABLE `msgqueue` (
   `status`                tinyint unsigned,
   `sv_httpcode`           smallint unsigned,
   `sv_httpheaders`        text COMMENT 'plain EPP body; rows written before 7.0 may carry a deprecated __SERIALIZED: envelope -- read via StoredPayload::decode(), strip with: eppitnic doctor normalize-payloads',
-  `sv_httpdata`           text COMMENT 'plain EPP body; rows written before 7.0 may carry a deprecated __SERIALIZED: envelope -- read via StoredPayload::decode(), strip with: eppitnic doctor normalize-payloads'
+  `sv_httpdata`           text COMMENT 'plain EPP body; rows written before 7.0 may carry a deprecated __SERIALIZED: envelope -- read via StoredPayload::decode(), strip with: eppitnic doctor normalize-payloads',
+  KEY `msgqueue_cl_trid` (`cl_trid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `contacts` (

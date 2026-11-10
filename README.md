@@ -7,7 +7,7 @@
 2. [Composer](https://getcomposer.org/), to install the third-party
    dependencies declared in `composer.json` — run `composer install` before
    first use
-3. CURL, XML, PDO and intl modules for PHP
+3. CURL, XML, PDO, intl, mbstring and ctype modules for PHP
 4. either a MariaDB/MySQL or another database
 
 None of the above if you'd rather run the whole thing in Docker instead — see

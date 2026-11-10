@@ -10,7 +10,7 @@
 -- and transfers.authinfo, the code a transfer-in was requested with,
 -- transfers.kind (transfer or trade) and a nullable transfers.registrant (NULL:
 -- a plain transfer), and domain names compared byte for byte (utf8mb4_bin) and
--- refused with capitals (CHECK)
+-- refused with capitals (CHECK), and an index on msgqueue.cl_trid
 -- ============================================================================
 
 ALTER TABLE `resellers`
@@ -205,6 +205,10 @@ ALTER TABLE `transfers`
 ALTER TABLE `messages`
   ADD CONSTRAINT IF NOT EXISTS `messages_domain_lower`
   CHECK (`domain` = LOWER(`domain`) AND LOCATE(CHAR(0xE1BA9E USING utf8mb4), `domain`) = 0);
+
+-- the raw response of a poll message is found by its clTRID
+ALTER TABLE `msgqueue`
+  ADD INDEX IF NOT EXISTS `msgqueue_cl_trid` (`cl_trid`);
 
 INSERT INTO `settings` (`key`, `value`) VALUES
   ('schema_version', '"070100"')

@@ -228,6 +228,25 @@ final class PollProcessorTransferTest extends EppTestCase
         $this->assertSame([null], R::getCol("SELECT user_id FROM history WHERE object = 'contacts' AND action = 'create'"));
     }
 
+    public function testAServerApprovedPlainTransferCompletesWithItsCopiedRegistrant(): void {
+        // approved by the registry when the losing registrar did not act
+        $this->transfer('example-one.it', registrant: null);
+        R::exec('UPDATE transfers SET reseller_id = 3');
+        $this->message(1, 'serverApprovedTransfer', 'example-one.it', 'LOSING-REG');
+        $this->transport->queue($this->domainInfoWithCopiedRegistrant());
+        $this->transport->queue(CommandCatalog::CONTACT_INFO_RESPONSE);
+        $this->transport->queue(CommandCatalog::OK_RESPONSE);
+        $this->transport->queue(CommandCatalog::CONTACT_INFO_RESPONSE);
+
+        $this->verify();
+
+        $domain = R::getRow("SELECT active, registrant, reseller_id FROM domains WHERE domain = 'example-one.it'");
+        $this->assertSame(['DUP532973256', 1, 3], [$domain['registrant'], (int) $domain['active'], (int) $domain['reseller_id']]);
+        $this->assertSame(3, (int) R::getCell("SELECT reseller_id FROM contacts WHERE handle = 'DUP532973256'"));
+        $this->assertSame(0, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
+        $this->assertTrue($this->archived(1));
+    }
+
     public function testAPlainTransferWithoutARegistrantIsReconciled(): void {
         $this->transfer('example-one.it', registrant: null);
         $this->message(1, 'clientApprovedTransfer', 'example-one.it');

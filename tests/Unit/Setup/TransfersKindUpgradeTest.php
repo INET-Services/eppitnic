@@ -9,8 +9,9 @@ use RedBeanPHP\R;
 
 /**
  * The 7.1 upgrade gives `transfers` its `kind` (existing rows are plain
- * transfers) and lets `registrant` be NULL, keeping its foreign key. Needs a
- * local MariaDB, like the other tests that touch one.
+ * transfers) and lets `registrant` be NULL, keeping its foreign key. It also
+ * indexes `msgqueue.cl_trid`. Needs a local MariaDB, like the other tests that
+ * touch one.
  */
 final class TransfersKindUpgradeTest extends TestCase
 {
@@ -44,6 +45,7 @@ final class TransfersKindUpgradeTest extends TestCase
 
         // back to the shape the upgrade starts from
         R::exec('ALTER TABLE transfers DROP COLUMN kind, MODIFY registrant varchar(32) NOT NULL');
+        R::exec('DROP INDEX msgqueue_cl_trid ON msgqueue');
         R::exec("INSERT INTO contacts (handle, reseller_id) VALUES ('REGI1234REGI5678', 1)");
         R::exec("INSERT INTO transfers (reseller_id, domain, registrant) VALUES (1, 'old.it', 'REGI1234REGI5678')");
     }
@@ -92,6 +94,17 @@ final class TransfersKindUpgradeTest extends TestCase
 
         $this->expectException(\Throwable::class);
         R::exec("INSERT INTO transfers (reseller_id, domain, kind) VALUES (1, 'bad.it', 'sideways')");
+    }
+
+    public function testMsgqueueIsIndexedByItsClTridOnce(): void {
+        $indexed = fn() => (int) R::getCell("SELECT COUNT(*) FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'msgqueue' AND COLUMN_NAME = 'cl_trid'");
+        $this->assertSame(0, $indexed());
+
+        Config::runSqlFile(self::UPGRADE);
+        Config::runSqlFile(self::UPGRADE);
+
+        $this->assertSame(1, $indexed());
     }
 
     public function testRunningItAgainChangesNothing(): void {

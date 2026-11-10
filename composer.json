@@ -11,6 +11,8 @@
         "ext-pdo_mysql": "*",
         "ext-posix": "*",
         "ext-intl": "*",
+        "ext-mbstring": "*",
+        "ext-ctype": "*",
         "gabordemooij/redbean": "^5.7",
         "slim/slim": "^4.0",
         "slim/psr7": "^1.8",
@@ -20,6 +22,12 @@
         "web-auth/webauthn-lib": "^5.3",
         "spomky-labs/pki-framework": "^1.6",
         "psr/clock": "^1.0"
+    },
+    "replace": {
+        "symfony/polyfill-php81": "*",
+        "symfony/polyfill-ctype": "*",
+        "symfony/polyfill-mbstring": "*",
+        "symfony/polyfill-intl-normalizer": "*"
     },
     "autoload": {
         "psr-4": {

@@ -5,6 +5,7 @@ use Eppitnic\Api\Auth;
 use Eppitnic\Api\Json;
 use Eppitnic\Config;
 use Eppitnic\Persistence\History;
+use Eppitnic\Persistence\StoredPayload;
 use Eppitnic\Service\EppSession;
 use Eppitnic\Service\EppSettings;
 use Eppitnic\Service\RegistryPasswordChange;
@@ -203,7 +204,22 @@ $app->get('/v1/poll-queue/{id}', function (Request $request, Response $response,
         return Json::response($response, ['error' => "Message id {$id} not found"], 404);
     }
 
-    return Json::response($response, ['message' => $message]);
+    // the registry's response it came from: the newest msgqueue row of its
+    // clTRID (and svTRID, where the row has one); null when none is stored
+    $raw = null;
+    if (($message['cl_trid'] ?? '') !== '') {
+        $sql = 'SELECT sv_httpdata FROM msgqueue WHERE cl_trid = :cl_trid';
+        $rawBind = [':cl_trid' => $message['cl_trid']];
+        if (($message['sv_trid'] ?? '') !== '') {
+            $sql .= ' AND (sv_trid IS NULL OR sv_trid = :sv_trid)';
+            $rawBind[':sv_trid'] = $message['sv_trid'];
+        }
+        $stored = R::getCell($sql . ' ORDER BY id DESC LIMIT 1', $rawBind);
+        $raw = $stored === null ? null : StoredPayload::decode((string) $stored);
+        $raw = $raw === '' ? null : $raw;
+    }
+
+    return Json::response($response, ['message' => $message, 'raw' => $raw]);
 });
 
 $app->post('/v1/poll-queue/{id}/archive', function (Request $request, Response $response, array $args): Response {

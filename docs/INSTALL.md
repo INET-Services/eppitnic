@@ -7,9 +7,9 @@ schedule one cron line. To run it in containers instead, see
 
 ## Quick start
 
-You need PHP 8.2 or later with the curl, XML, PDO MySQL and intl extensions,
-[Composer](https://getcomposer.org/), MariaDB or MySQL, a web server with
-TLS, and the credentials of your nic.it EPP account.
+You need PHP 8.2 or later with the curl, XML, PDO MySQL, intl, mbstring and
+ctype extensions, [Composer](https://getcomposer.org/), MariaDB or MySQL, a
+web server with TLS, and the credentials of your nic.it EPP account.
 
 1. Install the dependencies from the repository root:
 

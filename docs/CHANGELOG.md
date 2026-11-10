@@ -108,6 +108,8 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   hyphens and Latin letters, valid under UTS #46, and no label with hyphens
   in its third and fourth place. A name UTS #46 would map to another one
   (full-width letters, ligatures) is refused.
+- `GET /v1/poll-queue/{id}` also returns `raw`, the registry's XML response
+  the message arrived in (`null` when none is stored). The list is unchanged.
 
 ### Users and sessions
 
@@ -242,6 +244,9 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
 - Dependencies are on their latest minor releases, among them
   `firebase/php-jwt` 7.2, `phpmailer/phpmailer` 7.2 and `slim/slim` 4.15.3;
   `composer audit` reports no advisories.
+- `ext-mbstring` and `ext-ctype` are required, and `composer.json` replaces
+  the Symfony polyfills they and PHP 8.2 make redundant
+  (`symfony/polyfill-php81`, `-ctype`, `-mbstring`, `-intl-normalizer`).
 - Internationalised domain names go through ext-intl (UTS #46,
   non-transitional: `straße` stays `xn--strae-oqa`) instead of
   `algo26-matthias/idna-convert`, which is no longer a dependency, nor is its
@@ -318,6 +323,8 @@ Schema `070100`, applied automatically:
   `passkey_metadata` and `passkey_metadata_blob`; `history.object` gains
   `passkeys`. Users with a TOTP secret or `must_enroll_mfa` set become `totp`,
   every other existing user `none`.
+- New index `msgqueue_cl_trid` on `msgqueue.cl_trid`, which finds the raw
+  response of a poll message.
 - The users.email upgrade turns empty addresses into NULL and, where several
   users share one, keeps it on the lowest id and clears it on the others,
   recording each in `history` ("duplicate address removed by the 7.1

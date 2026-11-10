@@ -35,19 +35,27 @@ final class PollQueueScopeTest extends TestCase
         if ( ! R::hasDatabase('default')) {
             R::setup('sqlite::memory:');
         }
-        foreach (['messages', 'domains', 'transfers', 'users', 'resellers'] as $table) {
+        foreach (['messages', 'msgqueue', 'domains', 'transfers', 'users', 'resellers'] as $table) {
             R::exec("DROP TABLE IF EXISTS {$table}");
         }
-        R::exec('CREATE TABLE messages (id INTEGER PRIMARY KEY, type TEXT, domain TEXT, data TEXT,
+        R::exec('CREATE TABLE msgqueue (id INTEGER PRIMARY KEY, cl_trid TEXT, sv_trid TEXT, sv_httpdata TEXT)');
+        R::exec('CREATE TABLE messages (id INTEGER PRIMARY KEY, cl_trid TEXT, sv_trid TEXT, type TEXT, domain TEXT, data TEXT,
                  archived_user_id INTEGER DEFAULT NULL, archived_time TEXT DEFAULT NULL,
                  created_time TEXT DEFAULT CURRENT_TIMESTAMP)');
         R::exec('CREATE TABLE domains (id INTEGER PRIMARY KEY, domain TEXT, reseller_id INTEGER)');
         R::exec('CREATE TABLE transfers (id INTEGER PRIMARY KEY, domain TEXT, reseller_id INTEGER, status TEXT NOT NULL DEFAULT \'pending\')');
         R::exec("INSERT INTO domains (domain, reseller_id) VALUES ('ours.it', 2), ('theirs.it', 3)");
         R::exec("INSERT INTO transfers (domain, reseller_id) VALUES ('incoming.it', 2)");
-        R::exec("INSERT INTO messages (id, type, domain, data) VALUES
-                 (1, 'chgStatusMsgData', 'ours.it', ''), (2, 'pendingTransfer', 'incoming.it', ''),
-                 (3, 'chgStatusMsgData', 'theirs.it', ''), (4, 'creditMsgData', NULL, '')");
+        R::exec("INSERT INTO messages (id, cl_trid, sv_trid, type, domain, data) VALUES
+                 (1, 'CL-1', 'SV-1', 'chgStatusMsgData', 'ours.it', ''),
+                 (2, 'CL-2', 'SV-2', 'pendingTransfer', 'incoming.it', ''),
+                 (3, 'CL-3', 'SV-3', 'chgStatusMsgData', 'theirs.it', ''),
+                 (4, 'CL-4', 'SV-4', 'creditMsgData', NULL, '')");
+        R::exec("INSERT INTO msgqueue (cl_trid, sv_trid, sv_httpdata) VALUES
+                 ('CL-1', 'SV-1', '<epp>old</epp>'), ('CL-1', 'SV-1', '<epp>ours</epp>'),
+                 ('CL-1', 'SV-OTHER', '<epp>not this one</epp>'),
+                 ('CL-2', NULL, ?),
+                 ('CL-3', 'SV-3', '<epp>theirs</epp>')", ['__SERIALIZED:' . base64_encode(serialize('<epp>wrapped</epp>'))]);
         foreach (self::ACCOUNTS as $id => [$role, $reseller]) {
             TestAccounts::ensure($id, $role, $reseller);
         }
@@ -104,6 +112,40 @@ final class PollQueueScopeTest extends TestCase
         $this->assertSame(200, $this->call($app, 'GET', '/v1/poll-queue/' . self::OURS, 3)->getStatusCode());
         $this->assertSame(404, $this->call($app, 'GET', '/v1/poll-queue/' . self::THEIRS, 3)->getStatusCode());
         $this->assertSame(404, $this->call($app, 'GET', '/v1/poll-queue/' . self::ACCOUNT, 3)->getStatusCode());
+    }
+
+    public function testAMessageCarriesTheRegistrysResponseItCameIn(): void {
+        $app = $this->app();
+
+        $body = self::json($this->call($app, 'GET', '/v1/poll-queue/' . self::OURS, 3));
+
+        $this->assertSame('<epp>ours</epp>', $body['raw'], 'the newest row of that clTRID and svTRID');
+        $this->assertSame(self::OURS, (int) $body['message']['id']);
+    }
+
+    public function testAnOldSerializedEnvelopeIsDecoded(): void {
+        $body = self::json($this->call($this->app(), 'GET', '/v1/poll-queue/' . self::OUR_TRANSFER, 3));
+
+        $this->assertSame('<epp>wrapped</epp>', $body['raw'], 'a row without svTRID matches on the clTRID');
+    }
+
+    public function testRawIsNullWhereNothingWasStored(): void {
+        $app = $this->app();
+
+        $none = self::json($this->call($app, 'GET', '/v1/poll-queue/' . self::ACCOUNT, 1));
+        $this->assertArrayHasKey('raw', $none);
+        $this->assertNull($none['raw']);
+
+        R::exec('UPDATE messages SET cl_trid = NULL WHERE id = ?', [self::OURS]);
+        $this->assertNull(self::json($this->call($app, 'GET', '/v1/poll-queue/' . self::OURS, 3))['raw']);
+    }
+
+    public function testAnotherResellersResponseStaysTheirs(): void {
+        $response = $this->call($this->app(), 'GET', '/v1/poll-queue/' . self::THEIRS, 3);
+
+        $this->assertSame(404, $response->getStatusCode());
+        $this->assertStringNotContainsString('theirs</epp>', (string) $response->getBody());
+        $this->assertArrayNotHasKey('raw', self::json($response));
     }
 
     public function testAPlainUserCannotArchive(): void {
