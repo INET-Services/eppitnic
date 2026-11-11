@@ -90,6 +90,8 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   `trade`) is in `transfer` of `GET /v1/domains/{name}` and in the rows of
   `GET /v1/domains/transfers`, whose `name` and `email` are `null` for a plain
   transfer.
+- `GET /v1/domains/{name}` adds `scheduled_deletion`: the open deletion task
+  (`id`, `date`) queued by `DELETE ...?mode=expiry|date`, else `null`.
 
 - Internationalised domain names can be registered and managed: `POST
   /v1/domains` takes `sesamstraße.it` (Latin letters before `.it`; other

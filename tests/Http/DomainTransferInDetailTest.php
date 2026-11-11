@@ -17,7 +17,8 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 /**
  * GET /v1/domains/{name} on a transfer-in: the registry is asked with the
  * authinfo the request was made with; when it cannot answer, the `transfers`
- * row stands in. Every write route refuses the name.
+ * row stands in. Every write route refuses the name. An ordinary domain
+ * reports its open scheduled deletion, a transfer-in none.
  */
 // domain.php declares functions: each test loads it in a process of its own
 #[\PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses]
@@ -53,7 +54,7 @@ final class DomainTransferInDetailTest extends EppTestCase
         if ( ! R::hasDatabase('default')) {
             R::setup('sqlite::memory:');
         }
-        foreach (['transfers', 'contacts', 'domains', 'history'] as $table) {
+        foreach (['transfers', 'contacts', 'domains', 'history', 'tasks'] as $table) {
             R::exec("DROP TABLE IF EXISTS {$table}");
         }
         R::exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, handle TEXT, reseller_id INTEGER, name TEXT, email TEXT)');
@@ -64,6 +65,8 @@ final class DomainTransferInDetailTest extends EppTestCase
                  registrant TEXT, authinfo TEXT, kind TEXT NOT NULL DEFAULT 'transfer', techc TEXT, dns TEXT,
                  status TEXT NOT NULL DEFAULT 'pending', time TEXT,
                  attempts INTEGER NOT NULL DEFAULT 0, attempted_at TEXT)");
+        R::exec('CREATE TABLE tasks (id INTEGER PRIMARY KEY, domain TEXT, date TEXT, notice TEXT, email TEXT,
+                 object TEXT, action TEXT, active INTEGER DEFAULT 1)');
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
                  user_id INTEGER, object TEXT, object_id INTEGER, action TEXT, network TEXT, data TEXT)');
 
@@ -271,6 +274,52 @@ final class DomainTransferInDetailTest extends EppTestCase
 
         $this->assertTrue($body['stale']);
         $this->assertNull($body['transfer']);
+    }
+
+    private static function task(string $domain, string $date, ?string $object, ?string $action, int $active = 1): int {
+        R::exec('INSERT INTO tasks (domain, date, notice, email, object, action, active) VALUES (?, ?, ?, \'\', ?, ?, ?)',
+            [$domain, $date, 'scheduled deletion', $object, $action, $active]);
+        return (int) R::getInsertID();
+    }
+
+    public function testAnOpenScheduledDeletionIsReported(): void {
+        self::task('ours.it', '2027-01-01', null, null);
+        self::task('ours.it', '2026-12-01', 'registry', 'delete', 0);
+        $id = self::task('ours.it', '2026-12-24', 'registry', 'delete');
+        $this->answers = [CommandCatalog::DOMAIN_INFO_RESPONSE];
+
+        $body = $this->json($this->get('ours.it'));
+
+        $this->assertFalse($body['stale']);
+        $this->assertSame(['id' => $id, 'date' => '2026-12-24'], $body['scheduled_deletion']);
+    }
+
+    public function testTheLocalRowReportsAScheduledDeletionToo(): void {
+        $id = self::task('ours.it', '2026-12-24', 'registry', 'delete');
+        Client::useTransportFactory(fn() => new FakeTransport());
+
+        $body = $this->json($this->get('ours.it'));
+
+        $this->assertTrue($body['stale']);
+        $this->assertSame(['id' => $id, 'date' => '2026-12-24'], $body['scheduled_deletion']);
+    }
+
+    public function testWithoutAnOpenDeletionItIsNull(): void {
+        self::task('ours.it', '2026-12-01', 'registry', 'delete', 0);
+        self::task('ours.it', '2027-01-01', null, null);
+        $this->answers = [CommandCatalog::DOMAIN_INFO_RESPONSE];
+
+        $body = $this->json($this->get('ours.it'));
+
+        $this->assertArrayHasKey('scheduled_deletion', $body);
+        $this->assertNull($body['scheduled_deletion']);
+    }
+
+    public function testATransferInHasNoScheduledDeletion(): void {
+        self::task('incoming.it', '2026-12-24', 'registry', 'delete');
+        $this->answers = [CommandCatalog::DOMAIN_INFO_RESPONSE];
+
+        $this->assertNull($this->json($this->get('incoming.it'))['scheduled_deletion']);
     }
 
     public function testATransferWhoseDomainIsStoredAsActiveIsTheDomain(): void {

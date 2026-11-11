@@ -54,6 +54,12 @@ function transferToArray(array $row): array {
     ];
 }
 
+/** the open deletion `domain reap-deletions` will carry out, if any */
+function scheduledDeletion(string $name): ?array {
+    $row = R::getRow("SELECT id, date FROM tasks WHERE domain = ? AND object = 'registry' AND action = 'delete' AND active = 1 ORDER BY date LIMIT 1", [$name]);
+    return empty($row) ? null : ['id' => (int) $row['id'], 'date' => $row['date']];
+}
+
 /**
  * What is known of a transfer-in locally, in the domainToArray() shape: the
  * registry reports nothing of a domain it still sponsors for someone else.
@@ -260,12 +266,14 @@ $app->get('/v1/domains/{name}', function (Request $request, Response $response, 
     }
 
     if ($domain !== null) {
-        return Json::response($response, ['domain' => domainToArray($domain), 'stale' => false, 'transfer' => $transfer]);
+        return Json::response($response, ['domain' => domainToArray($domain), 'stale' => false, 'transfer' => $transfer,
+            'scheduled_deletion' => $transferIn === null ? scheduledDeletion($name) : null]);
     }
 
     // a transfer-in only lives in `transfers`: never a 404
     if ($transferIn !== null) {
-        return Json::response($response, ['domain' => transferDomainToArray($transferIn), 'stale' => true, 'transfer' => $transfer]);
+        return Json::response($response, ['domain' => transferDomainToArray($transferIn), 'stale' => true, 'transfer' => $transfer,
+            'scheduled_deletion' => null]);
     }
 
     // registry lookup failed: serve the last known local state, flagged as
@@ -278,7 +286,8 @@ $app->get('/v1/domains/{name}', function (Request $request, Response $response, 
         return Json::response($response, ['error' => "Domain '{$name}' not found"], 404);
     }
 
-    return Json::response($response, ['domain' => domainToArray($domain), 'stale' => true, 'transfer' => null]);
+    return Json::response($response, ['domain' => domainToArray($domain), 'stale' => true, 'transfer' => null,
+        'scheduled_deletion' => scheduledDeletion($name)]);
 });
 
 $app->post('/v1/domains', function (Request $request, Response $response, array $args): Response {
