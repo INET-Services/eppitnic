@@ -92,6 +92,9 @@ upgrades itself (`070000` to `070100`); see [UPGRADING.md](UPGRADING.md).
   transfer.
 - `GET /v1/domains/{name}` adds `scheduled_deletion`: the open deletion task
   (`id`, `date`) queued by `DELETE ...?mode=expiry|date`, else `null`.
+- An immediate deletion (`DELETE /v1/domains/{name}`, `domain delete`) of a
+  domain with a scheduled one deactivates that task. The deletion's history
+  row records it (`scheduled_deletion: "cancelled"`, `task_id`).
 
 - Internationalised domain names can be registered and managed: `POST
   /v1/domains` takes `sesamstraße.it` (Latin letters before `.it`; other

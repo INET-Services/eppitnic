@@ -1213,12 +1213,13 @@ class Domain extends AbstractObject
    * deactivate a domain stored in DB (soft delete)
    *
    * @param string $domain domain name to delete
+   * @param array $history more to record with the deletion
    * @return bool status
    */
-  public function deleteDomainDB(string $domain, Scope $scope): bool {
+  public function deleteDomainDB(string $domain, Scope $scope, array $history = []): bool {
     $ns = SerializedColumn::toArray((string) R::getCell("SELECT ns FROM domains WHERE domain = ?", [$domain]));
 
-    if ( ! $this->storageSetActive($domain, 0, $scope, 'delete', ['domain' => $domain])) {
+    if ( ! $this->storageSetActive($domain, 0, $scope, 'delete', ['domain' => $domain] + $history)) {
       return FALSE;
     }
 

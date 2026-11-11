@@ -640,7 +640,8 @@ $app->delete('/v1/domains/{name}', function (Request $request, Response $respons
             if ( ! $domain->delete($name)) {
                 return ['ok' => false, 'error' => $domain->getError()];
             }
-            $warnings = $domain->deleteDomainDB($name, $scope)
+            $cancelled = DomainService::cancelScheduledDeletion($name);
+            $warnings = $domain->deleteDomainDB($name, $scope, $cancelled)
                 ? []
                 : [Warnings::localWrite("domain '{$name}'", $domain->getError())];
             ContactRefresh::run($nic, [$registrant ?: null], $scope->userId);

@@ -144,6 +144,20 @@ final class DomainService
     }
 
     /**
+     * An immediate deletion supersedes a scheduled one: its open task is
+     * deactivated. Returns what the deletion's history row records of it.
+     */
+    public static function cancelScheduledDeletion(string $name): array {
+        $where = "domain = ? AND object = 'registry' AND action = 'delete' AND active = 1";
+        $id = R::getCell("SELECT id FROM tasks WHERE {$where} ORDER BY id LIMIT 1", [$name]);
+        if (empty($id)) {
+            return [];
+        }
+        R::exec("UPDATE tasks SET active = 0 WHERE {$where}", [$name]);
+        return ['scheduled_deletion' => 'cancelled', 'task_id' => (int) $id];
+    }
+
+    /**
      * Record a transfer-in request as pending, for PollProcessor to complete.
      * With a registrant it is a trade, belonging to that registrant's
      * reseller; without, a plain transfer, belonging to the requester's.

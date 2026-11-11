@@ -6,6 +6,7 @@ use Eppitnic\Cli\Command;
 use Eppitnic\Cli\UsageError;
 use Eppitnic\Epp\Domain;
 use Eppitnic\Service\ContactRefresh;
+use Eppitnic\Service\DomainService;
 use RedBeanPHP\R;
 
 /**
@@ -53,7 +54,7 @@ final class DomainDeleteCommand extends Command
                 // a dry run reached this point on a synthetic success, so the
                 // local row must not be touched
                 if ( ! $this->isDryRun()) {
-                    $domain->deleteDomainDB($name, $scope);
+                    $domain->deleteDomainDB($name, $scope, DomainService::cancelScheduledDeletion($name));
                     ContactRefresh::run($nic, [$registrant ?: null], $this->userId());
                 }
 
