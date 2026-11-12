@@ -144,8 +144,9 @@ final class DomainService
     }
 
     /**
-     * An immediate deletion supersedes a scheduled one: its open task is
-     * deactivated. Returns what the deletion's history row records of it.
+     * A domain deleted now, transferred out or missing at the registry has no
+     * use for a scheduled deletion: its open task is deactivated. Returns
+     * what the deletion's history row records of it.
      */
     public static function cancelScheduledDeletion(string $name): array {
         $where = "domain = ? AND object = 'registry' AND action = 'delete' AND active = 1";
@@ -246,7 +247,7 @@ final class DomainService
             if ( ! $domain->fetch($name)) {
                 $result['domain'] = 'not found';
                 // the registry does not have it, so neither should we
-                $domain->deleteDomainDB($name, $scope);
+                $domain->deleteDomainDB($name, $scope, self::cancelScheduledDeletion($name));
                 $results[$name] = $result;
                 continue;
             }

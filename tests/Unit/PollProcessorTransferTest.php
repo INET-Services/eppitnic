@@ -124,6 +124,22 @@ final class PollProcessorTransferTest extends EppTestCase
         $this->assertFalse($this->archived(1));
     }
 
+    public function testATransferOutCancelsAScheduledDeletion(): void {
+        R::exec("INSERT INTO domains (domain, reseller_id, ns, status) VALUES ('leaving.it', 2, 'a:0:{}', 'a:0:{}')");
+        R::exec("INSERT INTO tasks (domain, date, notice, object, action) VALUES ('leaving.it', '2027-05-01', 'scheduled deletion', 'registry', 'delete')");
+        $id = (int) R::getInsertID();
+        $tag = (string) ($this->nic->EPPCfg->registrar_tag ?: $this->nic->EPPCfg->username);
+        $this->message(1, 'serverApprovedTransfer', 'leaving.it', $tag);
+
+        $log = $this->verify();
+
+        $this->assertSame(0, (int) R::getCell("SELECT active FROM domains WHERE domain = 'leaving.it'"));
+        $this->assertSame(0, (int) R::getCell('SELECT active FROM tasks WHERE id = ?', [$id]));
+        $this->assertContains("  scheduled deletion cancelled (task {$id})", $log);
+        $data = json_decode(R::getCell("SELECT data FROM history WHERE object = 'domains' AND action = 'delete'"), true);
+        $this->assertSame(['scheduled_deletion' => 'cancelled', 'task_id' => $id], array_intersect_key($data, ['scheduled_deletion' => 0, 'task_id' => 0]));
+    }
+
     public function testAPendingNoticeForOurOwnTransferInIsArchived(): void {
         $this->transfer('example-one.it');
         $this->message(1, 'pendingTransfer', 'example-one.it');

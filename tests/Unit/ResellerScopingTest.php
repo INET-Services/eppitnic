@@ -41,7 +41,7 @@ final class ResellerScopingTest extends EppTestCase
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
                  user_id INTEGER, object TEXT, object_id INTEGER, action TEXT, network TEXT, data TEXT)');
         R::exec('CREATE TABLE settings (`key` TEXT PRIMARY KEY, value TEXT)');
-        R::exec('CREATE TABLE tasks (id INTEGER PRIMARY KEY, domain TEXT, date TEXT, notice TEXT, object TEXT, action TEXT)');
+        R::exec('CREATE TABLE tasks (id INTEGER PRIMARY KEY, domain TEXT, date TEXT, notice TEXT, object TEXT, action TEXT, active INTEGER DEFAULT 1)');
 
         R::exec("INSERT INTO contacts (reseller_id, handle) VALUES (2, 'REG-TWO'), (3, 'REG-THREE')");
         R::exec("INSERT INTO domains (reseller_id, domain, registrant, admin, tech) VALUES
@@ -148,6 +148,25 @@ final class ResellerScopingTest extends EppTestCase
         $this->transport->queue(self::response('domain-info-error'));
         DomainService::import($this->nic, ['three.it'], $this->admin);
         $this->assertSame(0, (int) R::getCell("SELECT active FROM domains WHERE domain = 'three.it'"), 'an admin reconciles any');
+    }
+
+    public function testAnImportOfAMissingDomainCancelsItsScheduledDeletion(): void {
+        R::exec("INSERT INTO tasks (domain, date, notice, object, action) VALUES ('two.it', '2027-05-01', 'scheduled deletion', 'registry', 'delete')");
+        $this->transport->queue(self::response('domain-info-error'));
+
+        DomainService::import($this->nic, ['two.it'], $this->alice);
+
+        $this->assertSame(0, (int) R::getCell("SELECT active FROM tasks WHERE domain = 'two.it'"));
+        $data = json_decode(R::getCell("SELECT data FROM history WHERE object = 'domains' AND action = 'delete'"), true);
+        $this->assertSame('cancelled', $data['scheduled_deletion']);
+    }
+
+    public function testAnImportLeavesAnotherResellersScheduledDeletion(): void {
+        R::exec("INSERT INTO tasks (domain, date, notice, object, action) VALUES ('three.it', '2027-05-01', 'scheduled deletion', 'registry', 'delete')");
+
+        DomainService::import($this->nic, ['three.it'], $this->alice);
+
+        $this->assertSame(1, (int) R::getCell("SELECT active FROM tasks WHERE domain = 'three.it'"));
     }
 
     public function testAnImportWillNotFollowARegistrantIntoAnotherReseller(): void {

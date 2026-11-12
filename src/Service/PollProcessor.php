@@ -169,7 +169,11 @@ class PollProcessor
       $log[] = "handling '{$transfer['domain']}' (transfer-out)";
 
       if ($this->domain->loadDB($transfer['domain'], Scope::operator(1))) {
-        if ( ! $this->domain->deleteDomainDB($transfer['domain'], Scope::operator(1))) {
+        $cancelled = DomainService::cancelScheduledDeletion($transfer['domain']);
+        if ($cancelled !== []) {
+          $log[] = "  scheduled deletion cancelled (task {$cancelled['task_id']})";
+        }
+        if ( ! $this->domain->deleteDomainDB($transfer['domain'], Scope::operator(1), $cancelled)) {
           $log[] = "  couldn't deactivate domain locally: " . $this->domain->getError();
         }
       } else {
