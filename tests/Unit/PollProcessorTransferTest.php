@@ -63,12 +63,15 @@ final class PollProcessorTransferTest extends EppTestCase
         R::exec('CREATE TABLE users (id INTEGER PRIMARY KEY, reseller_id INTEGER, email TEXT, active INTEGER DEFAULT 1,
                  notify_enabled INTEGER DEFAULT 1, notify_message_types TEXT, notify_fulltext TEXT)');
         R::exec("INSERT INTO users (reseller_id, email) VALUES (2, 'reseller@example.it')");
-        R::exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, handle TEXT, reseller_id INTEGER)');
+        R::exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, handle TEXT, reseller_id INTEGER, active INTEGER DEFAULT 1,
+                 status TEXT, name TEXT, org TEXT, street TEXT, street2 TEXT, street3 TEXT, city TEXT, province TEXT,
+                 postalcode TEXT, countrycode TEXT, voice TEXT, fax TEXT, email TEXT, authinfo TEXT,
+                 consentforpublishing INTEGER, nationalitycode TEXT, entitytype INTEGER, regcode TEXT, schoolcode TEXT)');
         R::exec('CREATE TABLE domains (id INTEGER PRIMARY KEY, domain TEXT, active INTEGER DEFAULT 1, reseller_id INTEGER,
                  registrant TEXT, admin TEXT, tech TEXT, ns TEXT, authinfo TEXT, dnssec TEXT,
                  status TEXT, cr_date TEXT, ex_date TEXT, last_invoice TEXT)');
         R::exec('CREATE TABLE history (id INTEGER PRIMARY KEY, timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-                 user_id INTEGER, object TEXT, object_id INTEGER, action TEXT, data TEXT)');
+                 user_id INTEGER, object TEXT, object_id INTEGER, action TEXT, network TEXT, data TEXT)');
         R::exec('CREATE TABLE settings (`key` TEXT PRIMARY KEY, value TEXT)');
         R::exec('CREATE TABLE tasks (id INTEGER PRIMARY KEY, domain TEXT, date TEXT, notice TEXT, object TEXT,
                  action TEXT, active INTEGER DEFAULT 1, exit_code INTEGER, exit_message TEXT)');
@@ -190,6 +193,75 @@ final class PollProcessorTransferTest extends EppTestCase
         $this->assertSame(1, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
         $this->assertFalse($this->archived(1));
         $this->assertStringContainsString("couldn't store domain locally", implode("\n", $log));
+    }
+
+    private function domainInfoWithCopiedRegistrant(): string {
+        return str_replace(
+            '<domain:registrant>REGI1234REGI5678</domain:registrant>',
+            '<domain:registrant>DUP532973256</domain:registrant>',
+            CommandCatalog::DOMAIN_INFO_RESPONSE
+        );
+    }
+
+    /** @return array<string, array{0: string, 1: string}> */
+    public static function approvals(): array {
+        return [
+            'by the losing registrar' => ['clientApprovedTransfer', 'OTHER-REG'],
+            'by the registry'         => ['serverApprovedTransfer', 'LOSING-REG'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('approvals')]
+    public function testACopiedRegistrantIsFetchedAndStoredForTheTransfersReseller(string $type, string $acId): void {
+        $this->transfer('example-one.it');
+        R::exec('UPDATE transfers SET reseller_id = 3');
+        $this->message(1, $type, 'example-one.it', $acId);
+        $this->transport->queue($this->domainInfoWithCopiedRegistrant());
+        $this->transport->queue(CommandCatalog::CONTACT_INFO_RESPONSE);
+        $this->transport->queueAll(CommandCatalog::OK_RESPONSE, 3);
+
+        $this->verify();
+
+        $contact = R::getRow("SELECT reseller_id, name FROM contacts WHERE handle = 'DUP532973256'");
+        $this->assertSame(3, (int) $contact['reseller_id']);
+        $this->assertSame('Mario Rossi', $contact['name']);
+        $domain = R::getRow("SELECT active, registrant, reseller_id FROM domains WHERE domain = 'example-one.it'");
+        $this->assertSame(['DUP532973256', 1, 3], [$domain['registrant'], (int) $domain['active'], (int) $domain['reseller_id']]);
+        $this->assertSame(0, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
+        $this->assertTrue($this->archived(1));
+        $this->assertSame([null], R::getCol("SELECT user_id FROM history WHERE object = 'contacts' AND action = 'create'"));
+    }
+
+    public function testACopiedRegistrantThatCannotBeFetchedKeepsTheTransferForARetry(): void {
+        $this->transfer('example-one.it', 'pending', $this->requestedNs());
+        $this->message(1, 'clientApprovedTransfer', 'example-one.it');
+        $this->transport->queue($this->domainInfoWithCopiedRegistrant());
+        $this->transport->queue(self::UPDATE_REFUSED_RESPONSE);
+
+        $log = $this->verify();
+
+        $this->assertSame(0, (int) R::getCell('SELECT COUNT(*) FROM domains'));
+        $this->assertSame(1, (int) R::getCell('SELECT COUNT(*) FROM contacts'));
+        $this->assertSame(1, (int) R::getCell('SELECT COUNT(*) FROM transfers'));
+        $this->assertSame(0, (int) R::getCell('SELECT attempts FROM transfers'));
+        $this->assertFalse($this->archived(1));
+        $this->assertCount(2, $this->transport->requests, 'no nameserver update before the registrant is stored');
+        $this->assertStringContainsString(
+            "couldn't store registrant 'DUP532973256' locally, will retry next run",
+            implode("\n", $log)
+        );
+    }
+
+    public function testAStoredRegistrantIsNotFetchedAgain(): void {
+        $this->transfer('example-one.it');
+        $this->message(1, 'clientApprovedTransfer', 'example-one.it');
+        $this->transport->queue(CommandCatalog::DOMAIN_INFO_RESPONSE);
+        $this->transport->queueAll(CommandCatalog::OK_RESPONSE, 3);
+
+        $this->verify();
+
+        $this->assertStringNotContainsString('<contact:info', implode('', $this->transport->requests));
+        $this->assertSame(1, (int) R::getCell("SELECT COUNT(*) FROM domains WHERE registrant = 'REGI1234REGI5678'"));
     }
 
     private function refusedUpdate(): void {

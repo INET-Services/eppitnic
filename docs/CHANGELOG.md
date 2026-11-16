@@ -1,5 +1,16 @@
 # Changelog
 
+## Version 7.0.2
+Bugfix release: completing a transfer-in. No schema change.
+
+- On a transfer the registry gives the gaining registrar a copy of the
+  registrant under a new handle (`DUP…`). That contact was not stored
+  locally, so the domain could not be stored either: it stayed "transfer in
+  progress", missing from the domains, and every poll run failed the same
+  way. The poll job now fetches and stores that contact first, owned by the
+  reseller of the transfer request. If that fails, the transfer and its
+  message stay for the next run.
+
 ## Version 7.0.1
 Bugfix release: glue records can now be shown and edited, including the
 nameservers a registry has not validated yet. No schema change.

@@ -230,6 +230,15 @@ class PollProcessor
             break;
           }
 
+          // the registry hands the gaining registrar a copy of the registrant
+          // under a new handle; domains.registrant is a foreign key onto it
+          $registrant = (string) $this->domain->get('registrant');
+          $storedBy = ContactRefresh::storeMissing($this->client, $registrant, (int) $transfer['reseller_id'], null);
+          if ($storedBy !== null) {
+            $log[] = "  couldn't store registrant '{$registrant}' locally, will retry next run: " . $storedBy;
+            break;
+          }
+
           // reconcile tech contacts to the set requested at transfer time
           $tech = [];
           $currentTech = (array) $this->domain->get('tech');
