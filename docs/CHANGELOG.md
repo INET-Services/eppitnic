@@ -1,5 +1,20 @@
 # Changelog
 
+## Version 7.1.2
+Bugfix release: the FIDO metadata job no longer runs into FIDO's rate limit.
+No schema change.
+
+- FIDO limits BLOB downloads per IP address and answered several instances on
+  one host with HTTP 429. The `passkey_metadata` job now fetches only once the
+  stored BLOB's `nextUpdate` is reached, about once a month, and then sends
+  its serial (`localCopySerial`): a 304 keeps the stored data and only updates
+  `fetched_at`. A `Retry-After` from FIDO holds the job back until then; `GET
+  /v1/settings/passkeys` shows it as `metadata.retry_after`.
+- The fetch leaves from the EPP source address (`config epp-set interface`)
+  where one is set.
+- `passkey metadata --when-due` fetches only when due, as the job does; by
+  hand without it, the command still always fetches.
+
 ## Version 7.1.1
 Bugfix release: the import removes a domain locally only when the registry
 says it is no longer ours. No schema change.

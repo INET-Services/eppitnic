@@ -195,6 +195,91 @@ final class PasskeyMetadataTest extends PasskeyTestCase
         $this->assertSame(2, AuthenticatorMetadata::count());
     }
 
+    public function testWithDataStoredOnlyANewerSerialIsAskedFor(): void {
+        PasskeyMetadata::import($this->blob($this->authenticators(), 5, self::day(20)));
+        $http = new StaticHttpClient(200, $this->blob($this->authenticators(), 6, self::day(30)));
+        PasskeyMetadata::useHttpClient($http);
+
+        $this->assertSame(6, PasskeyMetadata::refresh()['serial']);
+        $this->assertSame('https://mds.fidoalliance.org/?localCopySerial=5', $http->calls[0]['url']);
+    }
+
+    /** The test certificates start now: a clock is set relative to it. */
+    private static function at(string $relative): MockClock {
+        return new MockClock((new \DateTimeImmutable($relative, new \DateTimeZone('UTC')))->format('Y-m-d H:i:s'));
+    }
+
+    public function testNotModifiedKeepsTheDataAndNotesTheCheck(): void {
+        PasskeyMetadata::import($this->blob($this->authenticators(), 5, self::day(20)));
+        $later = self::at('+2 days');
+        PasskeyMetadata::useClock($later);
+        PasskeyMetadata::useHttpClient(new StaticHttpClient(304));
+
+        $result = PasskeyMetadata::refresh();
+
+        $this->assertSame(['serial' => 5, 'next_update' => self::day(20), 'entries' => 2, 'unchanged' => true], $result);
+        $this->assertSame(2, AuthenticatorMetadata::count());
+        $this->assertSame($later->now()->format('Y-m-d H:i:s'), AuthenticatorMetadata::blob()['fetched_at']);
+    }
+
+    public function testNotModifiedWithoutDataIsAFailure(): void {
+        PasskeyMetadata::useHttpClient(new StaticHttpClient(304));
+
+        $this->assertSame(MetadataFailure::FETCH, $this->failure(fn() => PasskeyMetadata::refresh())->reason);
+    }
+
+    public function testARetryAfterIsKeptAndHoldsTheJobBack(): void {
+        $clock = self::at('+1 hour');
+        PasskeyMetadata::useClock($clock);
+        $until = $clock->now()->modify('+3600 seconds')->format('Y-m-d H:i:s');
+        PasskeyMetadata::useHttpClient(new StaticHttpClient(429, 'Too many requests.', '', ['retry-after' => '3600']));
+
+        $failure = $this->failure(fn() => PasskeyMetadata::refresh());
+
+        $this->assertStringContainsString("HTTP 429, retry after {$until} UTC", $failure->getMessage());
+        $this->assertSame($until, AuthenticatorMetadata::blob()['retry_after']);
+        $this->assertFalse(PasskeyMetadata::due(), 'missing data waits out the Retry-After too');
+        PasskeyMetadata::useClock(self::at('+2 hours'));
+        $this->assertTrue(PasskeyMetadata::due());
+
+        PasskeyMetadata::useHttpClient(new StaticHttpClient(200, $this->blob($this->authenticators(), 5, self::day(20))));
+        PasskeyMetadata::refresh();
+        $this->assertNull(AuthenticatorMetadata::blob()['retry_after'], 'an answer clears it');
+    }
+
+    public function testARetryAfterAsAnHttpDateIsKept(): void {
+        $at = new \DateTimeImmutable('+90 minutes', new \DateTimeZone('UTC'));
+        PasskeyMetadata::useHttpClient(new StaticHttpClient(503, '', '', ['retry-after' => $at->format('D, d M Y H:i:s') . ' GMT']));
+
+        $this->failure(fn() => PasskeyMetadata::refresh());
+
+        $this->assertSame($at->format('Y-m-d H:i:s'), AuthenticatorMetadata::blob()['retry_after']);
+    }
+
+    public function testA429WithoutRetryAfterStoresNoWait(): void {
+        PasskeyMetadata::useHttpClient(new StaticHttpClient(429, 'Too many requests.'));
+
+        $this->assertStringEndsWith('HTTP 429', $this->failure(fn() => PasskeyMetadata::refresh())->getMessage());
+        $this->assertNull(AuthenticatorMetadata::blob()['retry_after']);
+    }
+
+    public function testTheJobIsDueWithoutDataAndOnceNextUpdateIsReached(): void {
+        $this->assertTrue(PasskeyMetadata::due(), 'nothing stored');
+
+        PasskeyMetadata::import($this->blob($this->authenticators(), 5, self::day(10)));
+        $this->assertFalse(PasskeyMetadata::due());
+
+        PasskeyMetadata::useClock(new MockClock(self::day(10) . ' 00:00:00'));
+        $this->assertTrue(PasskeyMetadata::due(), 'from nextUpdate on');
+    }
+
+    public function testTheEppSourceAddressIsTheFetchesToo(): void {
+        $this->assertNull(PasskeyMetadata::sourceAddress(), 'none set');
+
+        Config::set('epp', ['interface' => '192.0.2.7'] + Config::get('epp'));
+        $this->assertSame('192.0.2.7', PasskeyMetadata::sourceAddress());
+    }
+
     public function testAnAnswerThatIsNoBlobIsRefused(): void {
         PasskeyMetadata::useHttpClient(new StaticHttpClient(200, '<html>maintenance</html>'));
 

@@ -117,7 +117,8 @@ final class AuthenticatorMetadata
     }
 
     /**
-     * @return array{serial: ?int, next_update: ?string, fetched_at: ?string}
+     * @return array{serial: ?int, next_update: ?string, fetched_at: ?string, retry_after: ?string}
+     *         retry_after: no fetch before this UTC time, as the server asked
      */
     public static function blob(): array {
         try {
@@ -129,11 +130,20 @@ final class AuthenticatorMetadata
             'serial'      => isset($stored['serial']) ? (int) $stored['serial'] : null,
             'next_update' => $stored['next_update'] ?? null,
             'fetched_at'  => $stored['fetched_at'] ?? null,
+            'retry_after' => $stored['retry_after'] ?? null,
         ];
     }
 
+    /** Also clears a retry_after: the server answered. */
     public static function saveBlob(int $serial, string $nextUpdate, string $fetchedAt): void {
         Config::set(self::BLOB, ['serial' => $serial, 'next_update' => $nextUpdate, 'fetched_at' => $fetchedAt]);
+    }
+
+    /** @param string|null $at UTC 'Y-m-d H:i:s', or null to clear it */
+    public static function saveRetryAfter(?string $at): void {
+        $stored = array_filter(self::blob(), fn($value) => $value !== null);
+        unset($stored['retry_after']);
+        Config::set(self::BLOB, $at === null ? $stored : $stored + ['retry_after' => $at]);
     }
 
     /** @param array<int, string|int> $values */

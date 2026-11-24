@@ -2,6 +2,7 @@
 
 namespace Eppitnic\Service;
 
+use Eppitnic\Config;
 use Eppitnic\Persistence\AuthenticatorMetadata;
 use Eppitnic\PowerDns\CurlHttpClient;
 use Eppitnic\PowerDns\HttpClient;
@@ -20,6 +21,8 @@ use Psr\Clock\ClockInterface;
 final class PasskeyMetadata
 {
     public const URL = 'https://mds3.fidoalliance.org/';
+    /** where URL redirects to; the redirect drops a query string */
+    public const LOCAL_COPY_URL = 'https://mds.fidoalliance.org/?localCopySerial=';
     public const ROOT_FILE = EPPITNIC_ROOT . '/config/certs/globalsign-root-r3.pem';
 
     /** the BLOB is about 11 MB; anything past this is not it */
@@ -59,20 +62,76 @@ final class PasskeyMetadata
     }
 
     /**
-     * Download the BLOB, then import() it.
+     * Download the BLOB, then import() it. With data stored, only a newer
+     * serial is sent (304 otherwise). The connection leaves from the EPP
+     * source address where one is set, so instances sharing a host don't
+     * share FIDO's rate limit.
      *
-     * @return array{serial: int, next_update: string, entries: int}
+     * @return array{serial: int, next_update: string, entries: int, unchanged?: true}
      * @throws MetadataFailure
      */
     public static function refresh(): array {
-        $http = self::$http ?? new CurlHttpClient(10, 180, true, self::MAX_BYTES);
-        $response = $http->request('GET', self::URL, ['Accept: application/octet-stream'], null);
+        $http = self::$http ?? new CurlHttpClient(10, 180, true, self::MAX_BYTES, self::sourceAddress());
+        $stored = AuthenticatorMetadata::blob();
+        $entries = AuthenticatorMetadata::count();
+        $url = $stored['serial'] !== null && $entries > 0 ? self::LOCAL_COPY_URL . $stored['serial'] : self::URL;
+        $response = $http->request('GET', $url, ['Accept: application/octet-stream'], null);
 
+        if ($response['status'] === 304 && $url !== self::URL) {
+            AuthenticatorMetadata::saveBlob($stored['serial'], (string) $stored['next_update'], self::now()->format('Y-m-d H:i:s'));
+            return ['serial' => $stored['serial'], 'next_update' => (string) $stored['next_update'], 'entries' => $entries, 'unchanged' => true];
+        }
         if ($response['status'] !== 200 || $response['body'] === '') {
             $why = $response['status'] === 0 ? $response['error'] : 'HTTP ' . $response['status'];
+            $retryAfter = self::retryAfter($response['headers']['retry-after'] ?? '');
+            if ($retryAfter !== null) {
+                AuthenticatorMetadata::saveRetryAfter($retryAfter);
+                $why .= ", retry after {$retryAfter} UTC";
+            }
             throw new MetadataFailure(MetadataFailure::FETCH, 'the BLOB could not be fetched: ' . ($why !== '' ? $why : 'an empty answer'));
         }
         return self::import($response['body']);
+    }
+
+    /**
+     * Whether the scheduled job should fetch: no usable data, or its
+     * nextUpdate reached, and no Retry-After pending.
+     */
+    public static function due(): bool {
+        $blob = AuthenticatorMetadata::blob();
+        $now = self::now();
+        if ($blob['retry_after'] !== null && $now->format('Y-m-d H:i:s') < $blob['retry_after']) {
+            return false;
+        }
+        if (self::status()['state'] === 'missing') {
+            return true;
+        }
+        return $now->format('Y-m-d') >= $blob['next_update'];
+    }
+
+    /** The EPP source address, if set: the one this instance's host gave it. */
+    public static function sourceAddress(): ?string {
+        try {
+            $epp = (array) Config::get('epp');
+        } catch (\RuntimeException) {
+            return null;
+        }
+        $address = trim((string) ($epp['interface'] ?? ''));
+        return $address === '' ? null : $address;
+    }
+
+    /** @return string|null a Retry-After (seconds or HTTP date) as UTC 'Y-m-d H:i:s' */
+    private static function retryAfter(string $value): ?string {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        $now = self::now();
+        if (ctype_digit($value)) {
+            return $now->modify('+' . (int) $value . ' seconds')->format('Y-m-d H:i:s');
+        }
+        $at = \DateTimeImmutable::createFromFormat('D, d M Y H:i:s \\G\\M\\T', $value, new \DateTimeZone('UTC'));
+        return $at === false || $at <= $now ? null : $at->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
     }
 
     /**

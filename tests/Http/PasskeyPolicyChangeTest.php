@@ -362,7 +362,7 @@ final class PasskeyPolicyChangeTest extends PasskeyHttpTestCase
         $this->assertSame(AuthenticatorModels::catalogue(), $body['catalogue']);
         $this->assertSame('YubiKey 5 Series', $body['catalogue']['security_keys'][0]['label']);
         $this->assertSame('missing', $body['metadata']['state']);
-        $this->assertSame(['state', 'entries', 'overdue', 'serial', 'next_update', 'fetched_at'], array_keys($body['metadata']));
+        $this->assertSame(['state', 'entries', 'overdue', 'serial', 'next_update', 'fetched_at', 'retry_after'], array_keys($body['metadata']));
     }
 
     public function testTheMetadataStateFollowsTheData(): void {

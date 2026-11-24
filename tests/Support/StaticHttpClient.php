@@ -15,12 +15,13 @@ final class StaticHttpClient implements HttpClient
     public function __construct(
         private int $status = 200,
         private string $body = '',
-        private string $error = ''
+        private string $error = '',
+        private array $headers = []
     ) {
     }
 
     public function request(string $method, string $url, array $headers, ?string $body): array {
         $this->calls[] = ['method' => $method, 'url' => $url, 'headers' => $headers];
-        return ['status' => $this->status, 'body' => $this->body, 'error' => $this->error];
+        return ['status' => $this->status, 'body' => $this->body, 'error' => $this->error, 'headers' => $this->headers];
     }
 }

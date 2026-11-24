@@ -231,11 +231,11 @@ final class CronRunCommandTest extends EppTestCase
     }
 
     /** A BLOB signed under a root of this test's own, which the metadata code is told to trust. */
-    private function fidoBlob(int $serial): string {
+    private function fidoBlob(int $serial, ?string $nextUpdate = null): string {
         $root = TestPki::root('Test FIDO Root');
         $signer = TestPki::signer($root);
         PasskeyMetadata::useRoot($root['pem']);
-        return TestPki::jwt(TestPki::payload(['aaaaaaaa-bbbb-4ccc-8ddd-000000000001' => ['description' => 'Key One']], $serial), $signer, [$signer]);
+        return TestPki::jwt(TestPki::payload(['aaaaaaaa-bbbb-4ccc-8ddd-000000000001' => ['description' => 'Key One']], $serial, $nextUpdate), $signer, [$signer]);
     }
 
     private function metadataTable(): void {
@@ -277,7 +277,8 @@ final class CronRunCommandTest extends EppTestCase
             'poll_process'          => ['last_run_at' => self::minutesAgo(1), 'frequency_minutes' => 5],
             'passkey_metadata'      => ['enabled' => true, 'last_run_at' => self::minutesAgo(1500)],
         ]);
-        PasskeyMetadata::import($this->fidoBlob(7));
+        // due today, so the job fetches
+        PasskeyMetadata::import($this->fidoBlob(7, gmdate('Y-m-d')));
         PasskeyMetadata::useHttpClient(new StaticHttpClient(0, '', 'timeout'));
 
         [$code] = $this->capture();
@@ -285,6 +286,26 @@ final class CronRunCommandTest extends EppTestCase
         $this->assertSame(CRON_RUN_FAILED, $code);
         $this->assertSame(7, AuthenticatorMetadata::blob()['serial']);
         $this->assertSame(1, AuthenticatorMetadata::count());
+    }
+
+    public function testThePasskeyMetadataJobLeavesABlobThatIsNotDueAlone(): void {
+        $this->metadataTable();
+        $this->configure([
+            'domain_reap_deletions' => ['enabled' => false],
+            'poll_process'          => ['last_run_at' => self::minutesAgo(1), 'frequency_minutes' => 5],
+            'passkey_metadata'      => ['enabled' => true, 'last_run_at' => self::minutesAgo(1500)],
+        ]);
+        $next = gmdate('Y-m-d', time() + 10 * 86400);
+        PasskeyMetadata::import($this->fidoBlob(7, $next));
+        $http = new StaticHttpClient(200, $this->fidoBlob(8));
+        PasskeyMetadata::useHttpClient($http);
+
+        [$code, $output] = $this->capture();
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString("metadata BLOB 7 not due before {$next}", $output);
+        $this->assertSame([], $http->calls);
+        $this->assertNotNull(Config::get('passkey_metadata')['last_run_at']);
     }
 
     public function testThePasskeyMetadataJobSkipsWhilePasskeysAreOff(): void {

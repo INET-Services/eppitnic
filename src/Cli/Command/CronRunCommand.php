@@ -30,6 +30,9 @@ final class CronRunCommand extends Command
         'passkey_metadata'        => PasskeyMetadataCommand::class,
     ];
 
+    /** arguments a job runs with here, unlike by hand */
+    private const JOB_ARGS = ['passkey_metadata' => ['--when-due']];
+
     /** jobs with nothing to do while passkeys are off; by hand they still run */
     private const NEEDS_PASSKEYS = ['passkey_metadata'];
 
@@ -65,7 +68,7 @@ final class CronRunCommand extends Command
                 continue;
             }
 
-            $command = new $class([]);
+            $command = new $class(self::JOB_ARGS[$job] ?? []);
             $command->useErrorStream($this->errorStream());
             $code = $command->run();
             $command->flush();

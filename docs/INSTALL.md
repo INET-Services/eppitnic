@@ -478,7 +478,7 @@ bin/eppitnic config poll-process-set frequency_minutes <N>  # default 5
 ### `passkey metadata` — on by default
 
 Downloads the [FIDO Metadata Service](https://fidoalliance.org/metadata/) BLOB
-once a day. It is verified before a word of it is used: an RS256 signature, a
+once it is due. It is verified before a word of it is used: an RS256 signature, a
 certificate chain to the GlobalSign root the FIDO service is signed under
 (`config/certs/globalsign-root-r3.pem`), a serial no lower than the stored
 one, and a `nextUpdate` not more than 7 days past. The entries (AAGUID,
@@ -495,8 +495,17 @@ metadata has written off (`REVOKED`, `USER_VERIFICATION_BYPASS`,
 table alone. `GET /v1/settings/passkeys` shows the state: `ok`, `stale` or
 `missing`.
 
+FIDO publishes a new BLOB about once a month and rate-limits downloads per
+IP address (HTTP 429). The job runs every `frequency_minutes`, but fetches
+only once the stored BLOB's `nextUpdate` is reached, and then sends its serial:
+FIDO answers 304 until a newer one is out. A `Retry-After` from FIDO holds the
+job back until then. The connection leaves from the EPP source address
+(`config epp-set interface`) where one is set, so instances sharing a host
+with an address each don't share the limit either.
+
 ```bash
 bin/eppitnic passkey metadata                       # now, due or not
+bin/eppitnic passkey metadata --when-due            # only if due, as the job does
 bin/eppitnic passkey metadata --file=blob.jwt       # an offline server
 bin/eppitnic config passkey-metadata-set enabled false
 bin/eppitnic config passkey-metadata-set frequency_minutes <N>  # default 1440
@@ -509,7 +518,7 @@ needs outbound HTTPS (port 443) to `mds3.fidoalliance.org`, which redirects to
 `mds.fidoalliance.org`: firewall and proxy rules must allow both hosts. The
 fetch is the only outbound request passkeys make. A failed run exits `80` (not
 fetched) or `81` (BLOB refused), makes `cron run` exit `70`, and is tried again
-after `frequency_minutes`. A server that cannot reach FIDO either runs
+after `frequency_minutes` (or the `Retry-After`). A server that cannot reach FIDO either runs
 `passkey metadata --file=` by hand or switches the job off. Revocation lists of
 the signing chain are not consulted.
 
