@@ -213,7 +213,8 @@ final class DomainService
      * @return array<string, array{domain: string, registrant: string, contact_stored: string, domain_stored: string, error?: string}>
      *         per domain, each step's outcome: 'found'/'not found'/'held by
      *         another reseller', 'stored'/'not stored', or 'skipped' if an
-     *         earlier step stopped it
+     *         earlier step stopped it; the domain lookup also 'not registered'/
+     *         'held by another registrar' (removed locally) or 'failed' (kept)
      */
     public static function import(Client $nic, array $names, Scope $scope): array {
         $results = [];
@@ -245,8 +246,14 @@ final class DomainService
             }
 
             if ( ! $domain->fetch($name)) {
-                $result['domain'] = 'not found';
-                // the registry does not have it, so neither should we
+                // only 2202/9085 means "not ours": anything else keeps the row
+                if ($domain->svCode !== '2202' || $domain->extValueReasonCode !== '9085') {
+                    $result['domain'] = 'failed';
+                    $result['error'] = trim($domain->getError());
+                    $results[$name] = $result;
+                    continue;
+                }
+                $result['domain'] = self::whyNotOurs($domain, $name);
                 $domain->deleteDomainDB($name, $scope, self::cancelScheduledDeletion($name));
                 $results[$name] = $result;
                 continue;
@@ -289,6 +296,21 @@ final class DomainService
         }
 
         return $results;
+    }
+
+    /**
+     * 2202/9085 means gone or another registrar's; a domain:check tells which.
+     *
+     * @return string 'not registered', 'held by another registrar', or
+     *                'not found' when the check went unanswered
+     */
+    private static function whyNotOurs(Domain $domain, string $name): string {
+        $check = $domain->check($name);
+        return match ($check->available($name)) {
+            true    => 'not registered',
+            false   => 'held by another registrar',
+            default => 'not found',
+        };
     }
 
     /**

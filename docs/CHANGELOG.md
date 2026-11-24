@@ -1,5 +1,16 @@
 # Changelog
 
+## Version 7.1.1
+Bugfix release: the import removes a domain locally only when the registry
+says it is no longer ours. No schema change.
+
+- The import used to remove the local domain on any failed domain:info,
+  including a refused command or a dropped connection. Now only 2202 with
+  reason 9085 does: the registry answers that both for a domain that is not
+  registered and for one another registrar holds. A domain:check tells which,
+  and the result reads `not registered` or `held by another registrar`. Any
+  other failure reads `failed` with the error, and the domain stays.
+
 ## Version 7.1.0
 7.1 makes the backend compatible with the .it Registry Technical Guidelines
 v4.0: no administrative or technical contacts, no fax number, and `name`

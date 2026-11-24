@@ -150,6 +150,65 @@ final class ResellerScopingTest extends EppTestCase
         $this->assertSame(0, (int) R::getCell("SELECT active FROM domains WHERE domain = 'three.it'"), 'an admin reconciles any');
     }
 
+    private static function checkResponse(string $name, bool $available): string {
+        $avail = $available ? 'true' : 'false';
+        return <<<XML
+        <?xml version="1.0" encoding="UTF-8" standalone="no"?>
+        <epp xmlns="urn:ietf:params:xml:ns:epp-1.0">
+          <response>
+            <result code="1000"><msg lang="en">Command completed successfully</msg></result>
+            <resData>
+              <domain:chkData xmlns:domain="urn:ietf:params:xml:ns:domain-1.0">
+                <domain:cd><domain:name avail="{$avail}">{$name}</domain:name></domain:cd>
+              </domain:chkData>
+            </resData>
+            <trID><clTRID>TEST-0000000000-00000</clTRID><svTRID>TEST-SVTRID</svTRID></trID>
+          </response>
+        </epp>
+        XML;
+    }
+
+    /** @return array<string, array{bool|null, string}> */
+    public static function whyGone(): array {
+        return [
+            'not registered'      => [true, 'not registered'],
+            'another registrar'   => [false, 'held by another registrar'],
+            'check not answered'  => [null, 'not found'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('whyGone')]
+    public function testAnImportSaysWhyAMissingDomainIsGone(?bool $available, string $expected): void {
+        $this->transport->queue(self::response('domain-info-error'));
+        if ($available !== null) {
+            $this->transport->queue(self::checkResponse('two.it', $available));
+        }
+
+        $results = DomainService::import($this->nic, ['two.it'], $this->alice);
+
+        $this->assertSame($expected, $results['two.it']['domain']);
+        $this->assertSame(0, (int) R::getCell("SELECT active FROM domains WHERE domain = 'two.it'"));
+    }
+
+    public function testAnImportKeepsADomainTheRegistryFailedToAnswerFor(): void {
+        R::exec("INSERT INTO tasks (domain, date, notice, object, action) VALUES ('two.it', '2027-05-01', 'scheduled deletion', 'registry', 'delete')");
+        $this->transport->queue(str_replace(['2202', '9085'], ['2400', '5000'], self::response('domain-info-error')));
+
+        $results = DomainService::import($this->nic, ['two.it'], $this->alice);
+
+        $this->assertSame('failed', $results['two.it']['domain']);
+        $this->assertStringContainsString("EPP code '2400'", $results['two.it']['error']);
+        $this->assertSame(1, (int) R::getCell("SELECT active FROM domains WHERE domain = 'two.it'"));
+        $this->assertSame(1, (int) R::getCell("SELECT active FROM tasks WHERE domain = 'two.it'"));
+    }
+
+    public function testAnImportKeepsADomainWhenTheConnectionDrops(): void {
+        $results = DomainService::import($this->nic, ['two.it'], $this->alice);
+
+        $this->assertSame('failed', $results['two.it']['domain']);
+        $this->assertSame(1, (int) R::getCell("SELECT active FROM domains WHERE domain = 'two.it'"));
+    }
+
     public function testAnImportOfAMissingDomainCancelsItsScheduledDeletion(): void {
         R::exec("INSERT INTO tasks (domain, date, notice, object, action) VALUES ('two.it', '2027-05-01', 'scheduled deletion', 'registry', 'delete')");
         $this->transport->queue(self::response('domain-info-error'));

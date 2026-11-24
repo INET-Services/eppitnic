@@ -18,7 +18,7 @@ if ( ! defined('SCHEMA_VERSION')) define('SCHEMA_VERSION', '070100');
 
 // release version of the application, bumped per release; independent of
 // SCHEMA_VERSION
-if ( ! defined('APP_VERSION')) define('APP_VERSION', '7.1.0');
+if ( ! defined('APP_VERSION')) define('APP_VERSION', '7.1.1');
 
 // generic exit codes (1-9), returned by bin/eppitnic subcommands
 if ( ! defined('SYNTAX_ERROR'))      define('SYNTAX_ERROR', 1);       // wrong/missing CLI arguments
