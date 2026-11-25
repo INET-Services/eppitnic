@@ -147,8 +147,10 @@ type != 3"*.
 Every contact is a registrant: entity type 1 to 7 is required, and `create()`
 refuses anything else before the registry is asked. `name` and `org` must be
 the same: set either one and the other is copied from it; setting both to
-different values fails with *"name and org must be the same"*. Neither can be
-changed afterwards, and `update()` refuses an attempt. There is no fax number.
+different values fails with *"name and org must be the same"*. Afterwards
+only their upper and lower case can change, as the registry allows: where they
+were equal, `update()` applies a change of one to both, and refuses anything
+but case before the registry is asked. There is no fax number.
 
 The registration code is checked, not merely required. For entity type 2 it
 is a partita IVA, and the registry verifies its check digit: the last of the

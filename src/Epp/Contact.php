@@ -103,6 +103,8 @@ class Contact extends AbstractObject
 
   protected $name;
   protected $org;
+  /** @var array{name: string, org: string} as fetched: only their case may change */
+  private array $fetchedNameOrg = ['name' => '', 'org' => ''];
   protected $street;
   protected $street2;
   protected $street3;
@@ -328,7 +330,7 @@ class Contact extends AbstractObject
   }
 
   public const NAME_ORG_RULE = 'name and org must be the same';
-  public const NAME_ORG_FIXED = 'name and org cannot be changed once the contact exists';
+  public const NAME_ORG_FIXED = 'name and org cannot be changed once the contact exists, except for upper and lower case';
 
   /**
    * The registry wants org equal to name: whichever is missing is copied from
@@ -429,6 +431,7 @@ class Contact extends AbstractObject
 
       $this->name =        (string)$tmp->infData->postalInfo->name;
       $this->org =         (string)$tmp->infData->postalInfo->org;
+      $this->fetchedNameOrg = ['name' => $this->name, 'org' => $this->org];
       $this->street =      (string)$tmp->infData->postalInfo->addr->street[0];
       $this->street2 =     (string)$tmp->infData->postalInfo->addr->street[1];
       $this->street3 =     (string)$tmp->infData->postalInfo->addr->street[2];
@@ -497,7 +500,8 @@ class Contact extends AbstractObject
       return FALSE;
     }
 
-    if ($this->changed('name') || $this->changed('org')) {
+    $postal = $this->nameOrgChange();
+    if ($postal === null) {
       $this->setError(self::NAME_ORG_FIXED);
       return FALSE;
     }
@@ -537,7 +541,7 @@ class Contact extends AbstractObject
     }
 
     // a fax-only change leaves nothing to send
-    if ($addr === array() && $contact === array() && $registrant === array()
+    if ($addr === array() && $postal === array() && $contact === array() && $registrant === array()
         && ! $this->changed('authinfo') && ! $this->changed('consentforpublishing')) {
       return TRUE;
     }
@@ -549,11 +553,47 @@ class Contact extends AbstractObject
       $contact,
       $this->changed('authinfo') ? $this->authinfo : '',
       $this->changed('consentforpublishing') ? (int)$this->consentforpublishing : '',
-      $registrant
+      $registrant,
+      $postal
     );
 
     // query server
     return $this->ExecuteQuery("contact-update", $this->handle);
+  }
+
+  /**
+   * The name/org to send: the registry takes a change of case only. Where
+   * they were equal, a change to one is copied to the other.
+   *
+   * @return array<string, string>|null changed name/org; null if refused
+   */
+  private function nameOrgChange(): ?array {
+    if ( ! $this->changed('name', 'org')) {
+      return array();
+    }
+    $fetched = $this->fetchedNameOrg;
+    if ($fetched['name'] === $fetched['org']) {
+      // both given, they must still be equal
+      if ($this->changed('name') && $this->changed('org') && $this->name !== $this->org) {
+        return null;
+      }
+      $value = $this->changed('org') ? (string)$this->org : (string)$this->name;
+      $this->name = $this->org = $value;
+      $this->markChanged('name');
+      $this->markChanged('org');
+    }
+
+    $postal = array();
+    foreach (array('name', 'org') as $field) {
+      if ( ! $this->changed($field)) {
+        continue;
+      }
+      if (mb_strtolower((string)$this->$field, 'UTF-8') !== mb_strtolower($fetched[$field], 'UTF-8')) {
+        return null;
+      }
+      $postal[$field] = (string)$this->$field;
+    }
+    return $postal;
   }
 
   /**

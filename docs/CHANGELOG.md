@@ -1,5 +1,17 @@
 # Changelog
 
+## Version 7.1.3
+The name and organisation of a contact can change their upper and lower case.
+No schema change.
+
+- The registry takes a change of case in `name` and `org` of an existing
+  contact, registrants included, and refuses anything else (2306, reason
+  8044 "org cannot be changed for a registrant"). eppitnic now sends such a
+  change instead of refusing it: on `PATCH /v1/contacts/{handle}` and with
+  `contact update --name=`/`--org=`. Where name and org were equal, a change
+  to one is applied to both. Any other change is still refused before the
+  registry is asked.
+
 ## Version 7.1.2
 Bugfix release: the FIDO metadata job no longer runs into FIDO's rate limit.
 No schema change.

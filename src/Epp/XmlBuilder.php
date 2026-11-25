@@ -278,12 +278,13 @@ final class XmlBuilder
     }
 
     /**
-     * name, org and fax are never sent: the registry fixes the first two at
-     * creation and no longer supports fax.
+     * Fax is never sent: the registry no longer supports it. Name and org go
+     * only as a change of case, the one change the registry takes.
      *
      * @param array $addr street/city/sp/pc/cc pairs that changed
      * @param array $contactFields voice/email pairs that changed
      * @param array $registrant extcon registrant fields that changed
+     * @param array<string, string> $nameOrg name/org that changed
      */
     public static function contactUpdate(
         string $clTRID,
@@ -292,7 +293,8 @@ final class XmlBuilder
         array $contactFields,
         string $authinfo,
         int|string $consentForPublishing,
-        array $registrant
+        array $registrant,
+        array $nameOrg = []
     ): string {
         $builder = new self();
         $command = $builder->command();
@@ -301,14 +303,21 @@ final class XmlBuilder
         $contact = $builder->object($update, 'contact:update', self::CONTACT, 'contact-1.0.xsd');
         $builder->element($contact, 'contact:id', $handle, self::CONTACT);
 
-        $hasChange = $addr !== [] || $contactFields !== [] || $authinfo !== '';
+        $hasChange = $addr !== [] || $nameOrg !== [] || $contactFields !== [] || $authinfo !== '';
         if ($hasChange) {
             $chg = $builder->element($contact, 'contact:chg', null, self::CONTACT);
 
-            if ($addr !== []) {
+            if ($addr !== [] || $nameOrg !== []) {
                 $postal = $builder->element($chg, 'contact:postalInfo', null, self::CONTACT);
                 $postal->setAttribute('type', 'loc');
-
+                // name, org, addr: the order chgPostalInfoType wants
+                foreach (['name', 'org'] as $field) {
+                    if (isset($nameOrg[$field])) {
+                        $builder->element($postal, 'contact:' . $field, $nameOrg[$field], self::CONTACT);
+                    }
+                }
+            }
+            if ($addr !== []) {
                 $address = $builder->element($postal, 'contact:addr', null, self::CONTACT);
                 foreach ($addr as $field) {
                     if ((string) $field['value'] !== '') {

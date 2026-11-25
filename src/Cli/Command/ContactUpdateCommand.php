@@ -35,7 +35,7 @@ final class ContactUpdateCommand extends Command
         foreach (self::FIELDS as $field) {
             $options[$field . '='] = match ($field) {
                 'fax'          => 'ignored: the registry no longer supports fax',
-                'name', 'org'  => "rejected: {$field} cannot be changed once the contact exists",
+                'name', 'org'  => "change the case of {$field} only (anything else is rejected)",
                 default        => "set {$field}",
             };
         }

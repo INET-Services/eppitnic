@@ -130,11 +130,22 @@ final class ContactNameOrgRouteTest extends EppTestCase
 
         $this->assertSame(400, $response->getStatusCode());
         $this->assertSame(
-            'name and org cannot be changed once the contact exists',
+            'name and org cannot be changed once the contact exists, except for upper and lower case',
             json_decode((string) $response->getBody(), true)['error']
         );
         $updates = array_filter($this->sent->requests, fn($r) => str_contains($r, '<contact:update'));
         $this->assertSame([], array_values($updates));
+    }
+
+    public function testTheCaseOfTheOrgMayChange(): void {
+        $this->registry([CommandCatalog::CONTACT_INFO_RESPONSE, CommandCatalog::OK_RESPONSE]);
+
+        $response = $this->call('PATCH', '/v1/contacts/ABCD1234EFGH5678', ['org' => 'ROSSI & FIGLI S.R.L.']);
+
+        $this->assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+        $this->assertSame('ROSSI & FIGLI S.R.L.', json_decode((string) $response->getBody(), true)['contact']['org']);
+        $updates = array_values(array_filter($this->sent->requests, fn($r) => str_contains($r, '<contact:update')));
+        $this->assertStringContainsString('<contact:org>ROSSI &amp; FIGLI S.R.L.</contact:org>', $updates[0]);
     }
 
     public function testFaxInAnUpdateIsDropped(): void {

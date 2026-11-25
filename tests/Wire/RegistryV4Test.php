@@ -34,8 +34,11 @@ final class RegistryV4Test extends EppTestCase
     }
 
     /** a contact as fetch() leaves it, nothing pending */
-    private function fetchedContact(): Contact {
-        $this->transport->queue(CommandCatalog::CONTACT_INFO_RESPONSE);
+    /** @param bool $equal name equal to org, as guidelines v4.0 want it */
+    private function fetchedContact(bool $equal = false): Contact {
+        $this->transport->queue($equal
+            ? str_replace('<contact:name>Mario Rossi</contact:name>', '<contact:name>Rossi &amp; Figli S.r.l.</contact:name>', CommandCatalog::CONTACT_INFO_RESPONSE)
+            : CommandCatalog::CONTACT_INFO_RESPONSE);
         $contact = new Contact($this->nic);
         $this->assertTrue($contact->fetch('ABCD1234EFGH5678'));
         $this->transport->requests = [];
@@ -154,13 +157,67 @@ final class RegistryV4Test extends EppTestCase
         $contact->set('name', 'Someone Else');
 
         $this->assertFalse($contact->update());
-        $this->assertSame('name and org cannot be changed once the contact exists', $contact->getError());
+        $this->assertSame(Contact::NAME_ORG_FIXED, $contact->getError());
         $this->assertSame([], $this->transport->requests);
     }
 
     public function testChangingTheOrgIsRefusedAndNothingIsSent(): void {
         $contact = $this->fetchedContact();
         $contact->set('org', 'Someone Else');
+
+        $this->assertFalse($contact->update());
+        $this->assertSame([], $this->transport->requests);
+    }
+
+    public function testTheCaseOfTheOrgMayChangeAlone(): void {
+        $contact = $this->fetchedContact();
+        $this->transport->queue(CommandCatalog::OK_RESPONSE);
+        $contact->set('org', 'ROSSI & FIGLI S.R.L.');
+
+        $this->assertTrue($contact->update());
+
+        $sent = preg_replace('/>\s+</', '><', $this->transport->lastRequest());
+        $this->assertStringContainsString('<contact:postalInfo type="loc"><contact:org>ROSSI &amp; FIGLI S.R.L.</contact:org></contact:postalInfo>', $sent);
+        $this->assertStringNotContainsString('contact:name', $sent);
+        $this->assertStringNotContainsString('contact:addr', $sent);
+    }
+
+    public function testACaseChangeOfAnEqualNameAndOrgChangesBoth(): void {
+        $contact = $this->fetchedContact(equal: true);
+        $this->transport->queue(CommandCatalog::OK_RESPONSE);
+        $contact->set('name', 'ROSSI & Figli S.r.l.');
+        $contact->set('city', 'Merano');
+
+        $this->assertTrue($contact->update());
+
+        $sent = preg_replace('/>\s+</', '><', $this->transport->lastRequest());
+        $this->assertStringContainsString('<contact:name>ROSSI &amp; Figli S.r.l.</contact:name><contact:org>ROSSI &amp; Figli S.r.l.</contact:org><contact:addr>', $sent);
+        $this->assertSame('ROSSI & Figli S.r.l.', $contact->get('org'));
+    }
+
+    /** @return array<string, array{string}> */
+    public static function notJustCase(): array {
+        return [
+            'dots'   => ['Rossi & Figli Srl'],
+            'spaces' => ['Rossi &  Figli S.r.l.'],
+            'other'  => ['Bianchi S.r.l.'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('notJustCase')]
+    public function testAnythingButCaseIsRefusedAndNothingIsSent(string $org): void {
+        $contact = $this->fetchedContact(equal: true);
+        $contact->set('org', $org);
+
+        $this->assertFalse($contact->update());
+        $this->assertSame(Contact::NAME_ORG_FIXED, $contact->getError());
+        $this->assertSame([], $this->transport->requests);
+    }
+
+    public function testAnEqualNameAndOrgMustStayEqual(): void {
+        $contact = $this->fetchedContact(equal: true);
+        $contact->set('name', 'ROSSI & FIGLI S.R.L.');
+        $contact->set('org', 'rossi & figli s.r.l.');
 
         $this->assertFalse($contact->update());
         $this->assertSame([], $this->transport->requests);
