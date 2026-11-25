@@ -403,6 +403,25 @@ final class DomainSyncCommandTest extends EppTestCase
         $this->assertSame([], \Eppitnic\Persistence\SerializedColumn::toArray($row['tech']));
     }
 
+    public function testAnUnchangedDomainIsNeitherWrittenNorRecorded(): void {
+        $this->withSettings(['enabled' => true, 'batch_size' => 25, 'cursor_id' => 0]);
+        $this->seedDomain('steady.it'); // as infoResponse() reports it, expiry as a date
+
+        $command = new DomainSyncCommand([]);
+        $output = $this->withRegistry($command, [
+            $this->checkResponse(['steady.it' => false]),
+            $this->infoResponse('steady.it'),
+            $this->contactInfoResponse('REGI1234REGI5678'),
+            $this->contactInfoResponse('ADMIN123ADMIN456'),
+            $this->contactInfoResponse('TECH1234TECH5678'),
+        ], function () use ($command) {
+            $this->assertSame(0, $command->run());
+        });
+
+        $this->assertSame(0, (int) R::getCell("SELECT COUNT(*) FROM history WHERE object = 'domains'"));
+        $this->assertStringContainsString('0 reconciled', $output);
+    }
+
     public function testExpiryOnlyDriftStillTriggersAWrite(): void {
         $this->withSettings(['enabled' => true, 'batch_size' => 25, 'cursor_id' => 0]);
         $this->seedDomain('renewed.it', ['ex_date' => '2027-01-01']); // local: stale expiry

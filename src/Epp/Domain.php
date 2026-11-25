@@ -1297,7 +1297,7 @@ class Domain extends AbstractObject
    * The date part of a registry timestamp ("2026-09-27T15:56:37.000+02:00"),
    * which a DATE column refuses in strict SQL mode.
    */
-  private static function dateOnly(?string $value): ?string {
+  public static function dateOnly(?string $value): ?string {
     return preg_match('/^\d{4}-\d{2}-\d{2}/', (string) $value, $m) === 1 ? $m[0] : $value;
   }
 

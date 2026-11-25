@@ -640,7 +640,7 @@ class Contact extends AbstractObject
       $data[$field] = $this->$field;
     }
 
-    $existing = R::getRow("SELECT id FROM contacts WHERE handle = ?", [$this->handle]);
+    $existing = R::getRow("SELECT * FROM contacts WHERE handle = ?", [$this->handle]);
 
     if (empty($existing)) {
       $data['handle'] = $this->handle;
@@ -649,20 +649,48 @@ class Contact extends AbstractObject
       if ( ! $this->storageInsert($data, $this->handle)) {
         return FALSE;
       }
-    } else {
-      // unscoped: an upsert is not a scoped write. $resellerId says who owns
-      // a *new* row, not who may touch an existing one -- the two fields left
-      // out of $data above are exactly the ones that would move.
-      if ( ! $this->storageUpdate($this->handle, $data, Scope::operator((int) $actorId))) {
-        return FALSE;
-      }
+      History::record('contacts', $this->storageId($this->handle), 'create', ['handle' => $this->handle], $actorId);
+      return TRUE;
     }
 
-    History::record(
-      'contacts', $this->storageId($this->handle),
-      empty($existing) ? 'create' : 'update', ['handle' => $this->handle], $actorId
-    );
+    // contact:info carries no authinfo: the stored one stays unless set here
+    if ( ! $this->changed('authinfo')) {
+      unset($data['authinfo']);
+    }
+    // a refresh that finds nothing new writes nothing, history included
+    $changed = self::changedColumns($existing, $data);
+    if ($changed === []) {
+      return TRUE;
+    }
+
+    // unscoped: an upsert is not a scoped write. $resellerId says who owns
+    // a *new* row, not who may touch an existing one -- the two fields left
+    // out of $data above are exactly the ones that would move.
+    if ( ! $this->storageUpdate($this->handle, $changed, Scope::operator((int) $actorId))) {
+      return FALSE;
+    }
+    History::record('contacts', $this->storageId($this->handle), 'update', ['handle' => $this->handle] + $changed, $actorId);
     return TRUE;
+  }
+
+  /**
+   * The columns whose value differs from the stored row, compared as the
+   * database returns them (strings, NULL as '').
+   *
+   * @param array<string, mixed> $stored the row as read
+   * @param array<string, mixed> $data the values to store
+   * @return array<string, mixed> the changed ones, with their new values
+   */
+  private static function changedColumns(array $stored, array $data): array {
+    $changed = [];
+    foreach ($data as $column => $value) {
+      $old = (string) ($stored[$column] ?? '');
+      $new = is_bool($value) ? (string) (int) $value : (string) ($value ?? '');
+      if ($old !== $new) {
+        $changed[$column] = $value;
+      }
+    }
+    return $changed;
   }
 
   /**

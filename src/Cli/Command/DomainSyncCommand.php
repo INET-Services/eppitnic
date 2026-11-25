@@ -243,7 +243,8 @@ final class DomainSyncCommand extends Command
             $changed === []
             && (
                 $this->normalizeStatus($before->get('status')) !== $this->normalizeStatus($after->get('status'))
-                || $localExDate !== (string) $after->get('exDate')
+                // the column holds a date, the registry a timestamp
+                || $localExDate !== (string) Domain::dateOnly((string) $after->get('exDate'))
             )
         ) {
             $changed[] = 'authinfo';

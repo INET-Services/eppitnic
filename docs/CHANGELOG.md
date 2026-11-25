@@ -1,8 +1,9 @@
 # Changelog
 
 ## Version 7.1.3
-The name and organisation of a contact can change their upper and lower case.
-No schema change.
+The name and organisation of a contact can change their upper and lower case,
+and domain sync no longer floods the history with domains and contacts that
+did not change. No schema change.
 
 - The registry takes a change of case in `name` and `org` of an existing
   contact, registrants included, and refuses anything else (2306, reason
@@ -11,6 +12,30 @@ No schema change.
   `contact update --name=`/`--org=`. Where name and org were equal, a change
   to one is applied to both. Any other change is still refused before the
   registry is asked.
+- Domain sync compared the stored expiry date (`2027-01-01`) with the
+  registry's timestamp (`2027-01-01T00:00:00.000+01:00`), so every domain it
+  checked looked renewed: it was rewritten, recorded as a `domains`/`update`
+  entry, and the job exited "data inconsistent" on every run. The dates are
+  now compared as dates.
+- Every refresh of a stored contact (domain sync, which re-reads the
+  contacts of the domains it checks every run, plus imports and the refresh
+  after a registrant change or deletion) rewrote the row and recorded a
+  `contacts`/`update` entry with only `{"handle": ...}`, changed or not:
+  about 25 entries every few minutes. Now a refresh that finds nothing new
+  writes nothing, and a real change records the changed columns.
+- A refresh no longer replaces the stored contact authinfo with a random one:
+  the registry's `contact:info` carries none.
+- The contact entries already written say nothing beyond the handle and can
+  be removed: `DELETE FROM history WHERE object = 'contacts' AND action =
+  'update' AND JSON_LENGTH(data) = 1 AND data LIKE '{"handle":%';`
+- The domain entries the job wrote mostly repeat an earlier one for the same
+  domain. This keeps the first entry of each distinct content per domain (a
+  state that returns later, such as a status set and cleared again, loses its
+  repeat):
+  `DELETE FROM history WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER()
+  OVER (PARTITION BY object_id, MD5(data) ORDER BY id) AS rn FROM history
+  WHERE object = 'domains' AND action = 'update' AND user_id = 1) t WHERE
+  rn > 1);`
 
 ## Version 7.1.2
 Bugfix release: the FIDO metadata job no longer runs into FIDO's rate limit.
